@@ -14,6 +14,8 @@ do
             ./train.py \
             --policy.path=/ckpt/pi0 \
             --use_lora=true \
+            --lora_cfg='{"r":16,"alpha":32}' \
+            --target_keywords='["q_proj","k_proj","v_proj"]' \
             --use_ddp=true \
             --train_dataset.repo_id=/data/piper_lerobot/lerobot_aligncups_5hz/train \
             --train_dataset.root=/data/piper_lerobot/lerobot_aligncups_5hz/train \

@@ -6,10 +6,13 @@ from pprint import pformat
 from typing import Any
 
 import torch
-from peft import PeftModel
+from pathlib import Path
+import safetensors.torch as sft
+from common.utils.adapter_utils import load_adapters
 from termcolor import colored
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import copy
 
 from common.constants import GRIPPER_EFFORT
 from common.robot_devices.robot_utils import read_end_pose_msg, ctrl_end_pose
@@ -31,6 +34,10 @@ from common.datasets.sampler import EpisodeAwareSampler
 from common.datasets.utils import cycle
 
 from common.policies.factory import make_policy
+# Adapter injection utilities
+from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
+from common.policies.prefix_tuning import inject_prefix_tuning
+from common.policies.lora_moe import inject_lora_moe
 from common.policies.pretrained import PreTrainedPolicy
 from common.policies.utils import get_device_from_parameters
 
@@ -112,15 +119,45 @@ def eval_main(cfg: EvalOursPipelineConfig):
 
     logging.info("Making policy.")
 
+    # We will build policy **from scratch** then load weights to ensure adapter injection can occur first.
+    # Temporarily clear pretrained_path to avoid automatic weight loading.
+    policy_cfg = copy.deepcopy(cfg.policy)
+    pretrained_path = Path(policy_cfg.pretrained_path) if policy_cfg and policy_cfg.pretrained_path else None
+    if policy_cfg:
+        policy_cfg.pretrained_path = None
+
     policy = make_policy(
-        cfg=cfg.policy,
+        cfg=policy_cfg,
         ds_meta=train_dataset_meta,
     )
 
-    if cfg.use_peft:
-        policy = PeftModel.from_pretrained(policy, cfg.peft_path)
-        policy.to(device=device)
-        policy.eval()
+    # Adapter injection (must match training flags)
+    if getattr(cfg, "use_lora", False):
+        lora_cfg_obj = InjectLoRAConfig(**(cfg.lora_cfg or {}))
+        policy, _ = inject_lora(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
+    elif getattr(cfg, "use_prefix_tuning", False):
+        from common.policies.prefix_tuning import PrefixTuningConfig as PTConfig
+        pt_cfg_obj = PTConfig(**(cfg.prefix_tuning_cfg or {}))
+        policy, _ = inject_prefix_tuning(policy, pt_cfg_obj, target_keywords=cfg.target_keywords)
+    elif getattr(cfg, "use_lora_moe", False):
+        from common.policies.lora_moe import LoRAMoEConfig
+        lora_moe_cfg_obj = LoRAMoEConfig(**(cfg.lora_moe_cfg or {}))
+        policy, _ = inject_lora_moe(policy, lora_moe_cfg_obj, target_keywords=cfg.target_keywords)
+
+    policy.to(device=device)
+
+    # Load weights from safetensors file
+    if pretrained_path and pretrained_path.is_dir():
+        adapters_file = pretrained_path / "adapters.safetensors"
+        model_file = pretrained_path / "model.safetensors"
+
+        if adapters_file.exists():
+            load_adapters(policy, adapters_file, device=device)
+        elif model_file.exists():
+            state = sft.load_file(str(model_file), device=str(device))
+            policy.load_state_dict(state, strict=True)
+        else:
+            raise FileNotFoundError("No adapters.safetensors or model.safetensors found in " + str(pretrained_path))
 
     step = 0  # number of policy updates (forward + backward + optim)
     num_total_params = sum(p.numel() for p in policy.parameters())

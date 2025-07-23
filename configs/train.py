@@ -15,7 +15,7 @@ import datetime as dt
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Type
+from typing import Type, Any
 
 import draccus
 from huggingface_hub import hf_hub_download
@@ -67,7 +67,18 @@ class TrainPipelineConfig(HubMixin):
     wandb: WandBConfig = field(default_factory=WandBConfig)
 
     use_lora: bool | None = False
+    use_prefix_tuning: bool | None = False
+    use_lora_moe: bool | None = False
     use_ddp: bool | None = False
+
+    # Adapter injection filtering: only layers whose names contain any of these keywords will be wrapped.
+    # If None or empty, all matching layers are wrapped.
+    target_keywords: list[str] | None = None
+
+    # Adapter specific hyper-parameters (overrides defaults).
+    lora_cfg: dict[str, Any] | None = None
+    prefix_tuning_cfg: dict[str, Any] | None = None
+    lora_moe_cfg: dict[str, Any] | None = None
 
     def __post_init__(self):
         self.checkpoint_path = None

@@ -15,6 +15,7 @@
 import datetime as dt
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 from pathlib import Path
 
 from common import envs, policies  # noqa: F401
@@ -34,6 +35,15 @@ class EvalPipelineConfig:
     output_dir: Path | None = None
     job_name: str | None = None
     seed: int | None = 1000
+    use_lora: bool | None = False
+    use_prefix_tuning: bool | None = False
+    use_lora_moe: bool | None = False
+    target_keywords: list[str] | None = None
+
+    # Adapter hyper-parameters
+    lora_cfg: dict[str, Any] | None = None
+    prefix_tuning_cfg: dict[str, Any] | None = None
+    lora_moe_cfg: dict[str, Any] | None = None
 
     def __post_init__(self):
         # HACK: We parse again the cli args here to get the pretrained path if there was one.

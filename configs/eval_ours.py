@@ -15,6 +15,7 @@
 import datetime as dt
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 from pathlib import Path
 
 from common import envs, policies  # noqa: F401
@@ -34,6 +35,15 @@ class EvalOursPipelineConfig:
     policy: PreTrainedConfig | None = None
     use_peft: bool = False
     peft_path: Path | None = None
+    use_lora: bool | None = False
+    use_prefix_tuning: bool | None = False
+    use_lora_moe: bool | None = False
+    target_keywords: list[str] | None = None
+
+    # Adapter hyper-parameters
+    lora_cfg: dict[str, Any] | None = None
+    prefix_tuning_cfg: dict[str, Any] | None = None
+    lora_moe_cfg: dict[str, Any] | None = None
     seed: int | None = 1000
     temporal_ensemble: bool = False
     batch_size: int = 1

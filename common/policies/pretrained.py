@@ -70,8 +70,12 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
             raise TypeError(f"Class {cls.__name__} must define 'name'")
 
     def _save_pretrained(self, save_directory: Path) -> None:
+        # Save config first
         self.config._save_pretrained(save_directory)
+
         model_to_save = self.module if hasattr(self, "module") else self
+
+        # Always save the full model for safety / exact resume.
         save_model_as_safetensor(model_to_save, str(save_directory / SAFETENSORS_SINGLE_FILE))
 
     @classmethod

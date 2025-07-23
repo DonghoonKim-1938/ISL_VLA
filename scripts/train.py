@@ -6,7 +6,12 @@ from contextlib import nullcontext
 from pprint import pformat
 from typing import Any
 
-from peft import LoraConfig, get_peft_model
+# LoRA / Prefix / LoRA-MoE injection utilities
+from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
+from common.policies.prefix_tuning import inject_prefix_tuning
+from common.policies.lora_moe import inject_lora_moe
+from common.policies.prefix_tuning import PrefixTuningConfig as PTConfig
+from common.policies.lora_moe import LoRAMoEConfig
 
 import torch
 from termcolor import colored
@@ -24,6 +29,7 @@ from common.utils.train_utils import (
     load_training_state,
     save_checkpoint,
     update_last_checkpoint,
+    save_training_state,
 )
 from common.utils.utils import (
     format_big_number,
@@ -31,6 +37,8 @@ from common.utils.utils import (
     has_method,
     init_logging,
 )
+# adapter utils
+from common.utils.adapter_utils import save_adapters
 from common.utils.wandb_utils import WandBLogger
 from configs import parser
 from configs.train import TrainPipelineConfig
@@ -40,7 +48,6 @@ from common.policies.utils import get_device_from_parameters
 from common.datasets.factory import make_dataset
 from common.datasets.utils import cycle
 from common.optim.factory import make_optimizer_and_scheduler
-from common.policies.lora_moe import inject_lora_moe
 
 
 def update_policy(
@@ -155,11 +162,27 @@ def train(cfg: TrainPipelineConfig):
         ds_meta = train_dataset.meta
     )
 
-    if cfg.use_lora:
-        lora_config = LoraConfig(r=16, target_modules="all-linear")
-        policy = get_peft_model(policy, lora_config)
+    # Adapter tuning options -------------------------------------------------
+    if getattr(cfg, "use_lora", False):
+        # Standard LoRA (rank=16 by default)
+        lora_cfg_obj = InjectLoRAConfig(**(cfg.lora_cfg or {})) if hasattr(cfg, "lora_cfg") else InjectLoRAConfig()
+        policy, _ = inject_lora(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
-        logging.info("Wrapped LORA module")
+        logging.info("Injected LoRA modules")
+
+    elif getattr(cfg, "use_prefix_tuning", False):
+        # Prefix tuning (custom implementation)
+        pt_cfg_obj = PTConfig(**(cfg.prefix_tuning_cfg or {})) if hasattr(cfg, "prefix_tuning_cfg") else PTConfig()
+        policy, _ = inject_prefix_tuning(policy, pt_cfg_obj, target_keywords=cfg.target_keywords)
+        policy = policy.to(device=device)
+        logging.info("Injected Prefix-Tuning modules")
+
+    elif getattr(cfg, "use_lora_moe", False):
+        # Mixture-of-LoRA experts
+        lora_moe_cfg_obj = LoRAMoEConfig(**(cfg.lora_moe_cfg or {})) if hasattr(cfg, "lora_moe_cfg") else LoRAMoEConfig()
+        policy, _ = inject_lora_moe(policy, lora_moe_cfg_obj, target_keywords=cfg.target_keywords)
+        policy = policy.to(device=device)
+        logging.info("Injected LoRA-MoE modules")
 
     if cfg.use_ddp:
         if dist.is_initialized() and dist.is_available():
@@ -280,7 +303,17 @@ def train(cfg: TrainPipelineConfig):
             else:
                 logging.info(f"Checkpoint policy after step {step}")
                 checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
-                save_checkpoint(checkpoint_dir, step, cfg, policy_m, optimizer, lr_scheduler)
+
+                if any([getattr(cfg, "use_lora", False), getattr(cfg, "use_prefix_tuning", False), getattr(cfg, "use_lora_moe", False)]):
+                    # Save only adapter weights + training state to keep checkpoint light
+                    pretrained_dir = checkpoint_dir / "pretrained_model"
+                    cfg.save_pretrained(pretrained_dir)
+                    save_adapters(policy_m, pretrained_dir / "adapters.safetensors")
+                    save_training_state(checkpoint_dir, step, optimizer, lr_scheduler)
+                else:
+                    # Full model checkpoint
+                    save_checkpoint(checkpoint_dir, step, cfg, policy_m, optimizer, lr_scheduler)
+
                 update_last_checkpoint(checkpoint_dir)
                 if wandb_logger:
                     wandb_logger.log_policy(checkpoint_dir)

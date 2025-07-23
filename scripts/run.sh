@@ -7,6 +7,9 @@ CUDA_VISIBLE_DEVICES=${DEVICES} \
     ./train.py \
     --policy.path=/ckpt/pi0 \
     --use_ddp=true \
+    --use_lora=true \
+    --lora_cfg='{"r":16,"alpha":32}' \
+    --target_keywords='["q_proj","k_proj","v_proj"]' \
     --dataset.repo_id=/data/piper_lerobot/lerobot_aligncups_5hz/train \
     --dataset.root=/data/piper_lerobot/lerobot_aligncups_5hz/train \
     --wandb.enable=true \

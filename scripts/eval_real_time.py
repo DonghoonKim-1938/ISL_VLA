@@ -6,6 +6,9 @@ from dataclasses import asdict
 import matplotlib.pyplot as plt
 from termcolor import colored
 import torch
+from pathlib import Path
+import safetensors.torch as sft
+import copy
 import numpy as np
 from huggingface_hub import login
 
@@ -37,7 +40,14 @@ from common.utils.utils import (
 from configs import parser
 
 from common.policies.factory import make_policy
+# Adapter injection utilities
+from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
+from common.policies.prefix_tuning import inject_prefix_tuning
+from common.policies.lora_moe import inject_lora_moe
+from common.policies.prefix_tuning import PrefixTuningConfig as PTConfig
+from common.policies.lora_moe import LoRAMoEConfig
 from common.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from common.utils.adapter_utils import load_adapters
 
 
 def create_batch(piper, exo_rs_cam, wrist_rs_cam, use_devices, task):
@@ -92,10 +102,38 @@ def eval_main(cfg: EvalRealTimeOursPipelineConfig):
 
     logging.info("Making policy.")
 
+    policy_cfg = copy.deepcopy(cfg.policy)
+    pretrained_path = Path(policy_cfg.pretrained_path) if policy_cfg and policy_cfg.pretrained_path else None
+
     policy = make_policy(
-        cfg=cfg.policy,
+        cfg=policy_cfg,
         ds_meta=train_dataset_meta,
     )
+
+    # Adapter injection
+    if getattr(cfg, "use_lora", False):
+        lora_cfg_obj = InjectLoRAConfig(**(cfg.lora_cfg or {}))
+        policy, _ = inject_lora(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
+    elif getattr(cfg, "use_prefix_tuning", False):
+        pt_cfg_obj = PTConfig(**(cfg.prefix_tuning_cfg or {}))
+        policy, _ = inject_prefix_tuning(policy, pt_cfg_obj, target_keywords=cfg.target_keywords)
+    elif getattr(cfg, "use_lora_moe", False):
+        lora_moe_cfg_obj = LoRAMoEConfig(**(cfg.lora_moe_cfg or {}))
+        policy, _ = inject_lora_moe(policy, lora_moe_cfg_obj, target_keywords=cfg.target_keywords)
+
+    policy.to(device)
+
+    if pretrained_path and pretrained_path.is_dir():
+        adapters_file = pretrained_path / "adapters.safetensors"
+        model_file = pretrained_path / "model.safetensors"
+
+        if adapters_file.exists():
+            load_adapters(policy, adapters_file, device=device)
+        elif model_file.exists():
+            state = sft.load_file(str(model_file), device=str(device))
+            policy.load_state_dict(state, strict=True)
+        else:
+            raise FileNotFoundError("No adapters.safetensors or model.safetensors found in " + str(pretrained_path))
 
     step = 0
     num_total_params = sum(p.numel() for p in policy.parameters())

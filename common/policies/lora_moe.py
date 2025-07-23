@@ -114,9 +114,18 @@ def inject_lora_moe(
             continue
 
         parent, attr = _get_parent(model, name)
-        setattr(parent, attr, MoELoRALinear(module, cfg))
+        moe_layer = MoELoRALinear(module, cfg)
+        setattr(parent, attr, moe_layer)
         wrapped.append(name)
 
+    # Track adapter parameter names
+    if wrapped:
+        adapter_names = []
+        for w in wrapped:
+            adapter_names.extend([f"{w}.A", f"{w}.B", f"{w}.router.weight"])
+        existing = getattr(model, "_adapter_param_names", set())
+        model._adapter_param_names = set(existing).union(adapter_names)
+
     if not wrapped:
-        raise RuntimeError("No linear layers matched for LoRA‑MoE injection.")
+        raise RuntimeError("No linear layers matched for LoRA-MoE injection.")
     return model, wrapped 
