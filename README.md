@@ -29,7 +29,7 @@ This repository provides a comprehensive framework for developing and evaluating
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/your-username/ISL_VLA.git
+   git clone https://github.com/DonghoonKim-1938/ISL_VLA.git
    cd ISL_VLA
    ```
 
@@ -94,7 +94,7 @@ If you use this framework in your research, please consider citing the original 
 
 ```bibtex
 @misc{isl-vla,
-  author = {Your Name},
+  author = {DH Kim},
   title = {ISL-VLA: A Framework for Vision-Language-Action Models in Robotics},
   year = {2024},
   publisher = {GitHub},

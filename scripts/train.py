@@ -31,6 +31,7 @@ from common.utils.train_utils import (
     update_last_checkpoint,
     save_training_state,
 )
+from common.utils.model_utils import compute_param_norm
 from common.utils.utils import (
     format_big_number,
     get_safe_torch_device,
@@ -85,6 +86,8 @@ def update_policy(
     # Updates the scale for next iteration.
     grad_scaler.update()
 
+    param_norm = compute_param_norm(policy, only_trainable=True)
+
     optimizer.zero_grad()
 
     # Step through pytorch scheduler at every batch instead of epoch
@@ -97,6 +100,7 @@ def update_policy(
 
     train_metrics.loss = loss.item()
     train_metrics.grad_norm = grad_norm.item()
+    train_metrics.param_norm = param_norm
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
     return train_metrics, output_dict
@@ -232,6 +236,7 @@ def train(cfg: TrainPipelineConfig):
     train_metrics = {
         "loss": AverageMeter("loss", ":.3f"),
         "grad_norm": AverageMeter("grdn", ":.3f"),
+        "param_norm": AverageMeter("pnorm", ":.3f"),
         "lr": AverageMeter("lr", ":0.1e"),
         "update_s": AverageMeter("updt_s", ":.3f"),
         "dataloading_s": AverageMeter("data_s", ":.3f"),
