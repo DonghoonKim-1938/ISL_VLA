@@ -89,6 +89,10 @@ class MoELoRALinear(nn.Module):
         lora_out = torch.einsum("...er,eor->...eo", projected_r, self.B)
 
         # Weighted sum over experts
+        # Cache gates for potential auxiliary losses (e.g. load-balancing)
+        if self.training:
+            self._last_gates = gates.detach()
+
         lora_mix = torch.einsum("...e,...eo->...o", gates * self.cfg.scale, lora_out)
         return base_out + lora_mix
 

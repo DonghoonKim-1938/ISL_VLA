@@ -32,6 +32,7 @@ from common.utils.train_utils import (
     save_training_state,
 )
 from common.utils.model_utils import compute_param_norm
+from common.policies.moe_utils import moe_aux_loss
 from common.utils.utils import (
     format_big_number,
     get_safe_torch_device,
@@ -61,12 +62,24 @@ def update_policy(
     lr_scheduler=None,
     use_amp: bool = False,
     lock=None,
+    moe_aux_cfg: dict | None = None,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     device = get_device_from_parameters(policy)
     policy.train()
     with torch.autocast(device_type=device.type) if use_amp else nullcontext():
         loss, output_dict = policy.forward(batch)
+
+        # Auxiliary MoE losses (balance + z-loss)
+        if moe_aux_cfg is not None:
+            aux_loss = moe_aux_loss(
+                policy,
+                lb_coeff=moe_aux_cfg.get("lb_coeff", 0.01),
+                z_coeff=moe_aux_cfg.get("z_coeff", 1e-3),
+            )
+            loss = loss + aux_loss
+            output_dict = output_dict or {}
+            output_dict["moe_aux_loss"] = aux_loss.item()
         # TODO(rcadene): policy.unnormalize_outputs(out_dict)
     grad_scaler.scale(loss).backward()
 
@@ -231,6 +244,14 @@ def train(cfg: TrainPipelineConfig):
     test_dl_iter = cycle(test_dataloader)
     cfg.batch_size = 2*cfg.batch_size
 
+    # Determine MoE balance coeff if needed
+    moe_aux_cfg = None
+    if getattr(cfg, "use_lora_moe", False):
+        moe_aux_cfg = {
+            "lb_coeff": (cfg.lora_moe_cfg or {}).get("lb_coeff", 0.01),
+            "z_coeff": (cfg.lora_moe_cfg or {}).get("z_coeff", 1e-3),
+        }
+
     policy.train()
 
     train_metrics = {
@@ -284,6 +305,7 @@ def train(cfg: TrainPipelineConfig):
             grad_scaler=grad_scaler,
             lr_scheduler=lr_scheduler,
             use_amp=cfg.policy.use_amp,
+            moe_aux_cfg=moe_aux_cfg,
         )
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
