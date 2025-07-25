@@ -6,6 +6,7 @@ from typing import Callable, Iterable, List, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # ---------------------------------------------------------------------------
 # Config & Utilities
@@ -69,17 +70,65 @@ class LoRALinear(nn.Module):
 
         self.dropout = nn.Dropout(cfg.dropout) if cfg.dropout > 0.0 else nn.Identity()
 
+        # Merge state flag
+        self._merged: bool = False
+
+    # ---------------------------------------------------------
+    # Utility helpers
+    # ---------------------------------------------------------
+
+    def extra_repr(self) -> str:  # shows up with print(module)
+        return (
+            f"in_features={self.base.in_features}, out_features={self.base.out_features}, "
+            f"r={self.cfg.r}, alpha={self.cfg.alpha}, dtype={self.base.weight.dtype}, "
+            f"merged={self._merged}"
+        )
+
+    def _lora_delta(self) -> torch.Tensor:
+        """Compute LoRA weight delta = B @ A (returns same dtype as base weight)."""
+        delta = (self.B @ self.A) * self.cfg.scale  # (out,in)
+        if self.cfg.fan_in_fan_out:
+            delta = delta.T  # match original layout
+        return delta.to(dtype=self.base.weight.dtype)
+
+    @torch.no_grad()
+    def merge(self) -> None:
+        """Manually merge LoRA weights into the frozen base layer for inference."""
+        if self._merged or self.cfg.r == 0:
+            return
+        self.base.weight.data += self._lora_delta()
+        self._merged = True
+
+    @torch.no_grad()
+    def unmerge(self) -> None:
+        """Undo :py:meth:`merge`. Rarely needed (e.g., to resume training after merging)."""
+        if not self._merged or self.cfg.r == 0:
+            return
+        self.base.weight.data -= self._lora_delta()
+        self._merged = False
+
+    # ---------------------------------------------------------
+    # Expose base weight for compatibility
+    # ---------------------------------------------------------
+
+    @property
+    def weight(self):  # type: ignore
+        """Alias to underlying base layer's weight parameter (read-only)."""
+        return self.base.weight
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore
         base_out = self.base(x)
         x_dp = self.dropout(x)
 
-        # Efficient LoRA projection with einsum
-        #   step1:  (r, in)  – project to rank
-        projected_r = torch.einsum("...i,ri->...r", x_dp, self.A)
-        #   step2:  (out, r) – back to out features
-        lora_out = torch.einsum("...r,or->...o", projected_r, self.B)
+        # einsum on bf16 can raise errors on some devices; compute in fp32 then cast back
+        orig_dtype = x_dp.dtype
+        x_fp32 = x_dp.float()
 
-        return base_out + lora_out * self.cfg.scale
+        proj_r   = F.linear(x_fp32, self.A.float())          # (..., r)
+        lora_out = F.linear(proj_r, self.B.float())          # (..., out)
+
+        lora_out = lora_out.to(orig_dtype) * self.cfg.scale
+        return base_out + lora_out
 
 
 # ---------------------------------------------------------------------------

@@ -31,7 +31,7 @@ from common.utils.train_utils import (
     update_last_checkpoint,
     save_training_state,
 )
-from common.utils.model_utils import compute_param_norm
+from common.utils.model_utils import compute_param_norm, freeze_non_adapters
 from common.policies.moe_utils import moe_aux_loss
 from common.utils.utils import (
     format_big_number,
@@ -185,6 +185,7 @@ def train(cfg: TrainPipelineConfig):
         lora_cfg_obj = InjectLoRAConfig(**(cfg.lora_cfg or {})) if hasattr(cfg, "lora_cfg") else InjectLoRAConfig()
         policy, _ = inject_lora(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
+        freeze_non_adapters(policy)
         logging.info("Injected LoRA modules")
 
     elif getattr(cfg, "use_prefix_tuning", False):
@@ -192,6 +193,7 @@ def train(cfg: TrainPipelineConfig):
         pt_cfg_obj = PTConfig(**(cfg.prefix_tuning_cfg or {})) if hasattr(cfg, "prefix_tuning_cfg") else PTConfig()
         policy, _ = inject_prefix_tuning(policy, pt_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
+        freeze_non_adapters(policy)
         logging.info("Injected Prefix-Tuning modules")
 
     elif getattr(cfg, "use_lora_moe", False):
@@ -199,6 +201,7 @@ def train(cfg: TrainPipelineConfig):
         lora_moe_cfg_obj = LoRAMoEConfig(**(cfg.lora_moe_cfg or {})) if hasattr(cfg, "lora_moe_cfg") else LoRAMoEConfig()
         policy, _ = inject_lora_moe(policy, lora_moe_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
+        freeze_non_adapters(policy)
         logging.info("Injected LoRA-MoE modules")
 
     if cfg.use_ddp:

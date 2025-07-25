@@ -4,6 +4,16 @@ import torch.nn as nn
 
 __all__ = ["compute_param_norm"]
 
+# ---------------------------------------------------------
+# Freezing helpers
+# ---------------------------------------------------------
+
+def freeze_non_adapters(model: nn.Module) -> None:
+    """Freeze all parameters except those recorded in ``_adapter_param_names``."""
+    keep: set[str] = set(getattr(model, "_adapter_param_names", set()))
+    for n, p in model.named_parameters():
+        p.requires_grad = n in keep
+
 def compute_param_norm(model: nn.Module, only_trainable: bool = True) -> float:
     """Return global L2 norm of model parameters.
 

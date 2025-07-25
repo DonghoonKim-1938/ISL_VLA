@@ -74,26 +74,51 @@ class MoELoRALinear(nn.Module):
 
         self.dropout = nn.Dropout(cfg.dropout) if cfg.dropout > 0.0 else nn.Identity()
 
+        # expose merge flag similar to LoRA
+        self._merged: bool = False
+
+    # ---------------------------------------------------------
+    # Expose base weight param
+    # ---------------------------------------------------------
+
+    @property
+    def weight(self):  # type: ignore
+        return self.base.weight
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore
         """Assumes input shape (..., in_features).  Router acts on last dim."""
         base_out = self.base(x)
         x_dp = self.dropout(x)
 
         # Compute gates
-        gates = torch.softmax(self.router(x_dp), dim=-1)  # (..., E)
+        gates = torch.softmax(self.router(x_dp.float()), dim=-1)  # (..., E) – router in fp32 for stability
 
-        # Efficient LoRA projection with einsum
-        #   step1: A: (E, r, in) → projected_r = x_dp ⋅ A^T ⇒ (..., E, r)
-        projected_r = torch.einsum("...i,eri->...er", x_dp, self.A)
-        #   step2: B: (E, out, r) ⇒ lora_out = projected_r ⋅ B^T ⇒ (..., E, out)
-        lora_out = torch.einsum("...er,eor->...eo", projected_r, self.B)
+        orig_dtype = x_dp.dtype
+        x_fp32 = x_dp.float()
 
-        # Weighted sum over experts
-        # Cache gates for potential auxiliary losses (e.g. load-balancing)
-        if self.training:
-            self._last_gates = gates.detach()
+        # ---------- LoRA projection without einsum ----------
+        # Flatten leading dims for batched matmul
+        leading_shape = x_fp32.shape[:-1]              # (...)
+        in_f = self.base.in_features # Get in_f from base
+        x_flat = x_fp32.reshape(-1, in_f)              # (N, in)
 
-        lora_mix = torch.einsum("...e,...eo->...o", gates * self.cfg.scale, lora_out)
+        A_t = self.A.float().transpose(2, 1)           # (E, in, r)
+        B_t = self.B.float().transpose(2, 1)           # (E, r, out)
+
+        # (N, 1, in) × (E, in, r) -> (N, E, r)
+        proj_r = torch.matmul(x_flat.unsqueeze(1), A_t)  # (N, E, r)
+
+        # (N, E, r) × (E, r, out) -> (N, E, out)
+        lora_out = torch.matmul(proj_r, B_t)             # (N, E, out)
+
+        # Restore leading shape
+        lora_out = lora_out.reshape(*leading_shape, self.cfg.num_experts, out_f)
+
+        # Weighted sum over experts without einsum: (..., E, out)
+        weighted = (gates * self.cfg.scale).unsqueeze(-1) * lora_out  # (..., E, out)
+        lora_mix = weighted.sum(dim=-2)                                # (..., out)
+        
+        lora_mix = lora_mix.to(orig_dtype)
         return base_out + lora_mix
 
 
@@ -104,7 +129,7 @@ def inject_lora_moe(
     target_keywords: Iterable[str] | None = None,
     filter_fn: Callable[[str, nn.Module], bool] | None = None,
 ) -> Tuple[nn.Module, List[str]]:
-    """Replace matching `nn.Linear` layers with `MoELoRALinear` (in‑place)."""
+    """Replace matching `nn.Linear` layers with `MoELoRALinear` (in-place)."""
 
     cfg = cfg or LoRAMoEConfig()
     wrapped: List[str] = []
@@ -132,4 +157,4 @@ def inject_lora_moe(
 
     if not wrapped:
         raise RuntimeError("No linear layers matched for LoRA-MoE injection.")
-    return model, wrapped 
+    return model, wrapped
