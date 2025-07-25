@@ -69,15 +69,19 @@ class LoRALinear(nn.Module):
 
         self.dropout = nn.Dropout(cfg.dropout) if cfg.dropout > 0.0 else nn.Identity()
 
+    def weight(self):
+        return self.base.weight
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore
         base_out = self.base(x)
-        x_dp = self.dropout(x)
+        x_dp = self.dropout(x).to(dtype=torch.float)
 
         # Efficient LoRA projection with einsum
         #   step1:  (r, in)  – project to rank
         projected_r = torch.einsum("...i,ri->...r", x_dp, self.A)
         #   step2:  (out, r) – back to out features
         lora_out = torch.einsum("...r,or->...o", projected_r, self.B)
+        lora_out = lora_out.to(dtype=torch.bfloat16)
 
         return base_out + lora_out * self.cfg.scale
 
