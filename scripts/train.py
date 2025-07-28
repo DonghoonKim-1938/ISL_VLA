@@ -8,7 +8,7 @@ from typing import Any
 
 # LoRA / Prefix / LoRA-MoE injection utilities
 from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
-from common.policies.prefix_tuning import inject_prefix_tuning
+from common.policies.prefix_tuning import inject_prefix_tuning, PrefixTuningConfig
 from common.policies.lora_moe import inject_lora_moe
 from common.policies.prefix_tuning import PrefixTuningConfig as PTConfig
 from common.policies.lora_moe import LoRAMoEConfig
@@ -190,7 +190,7 @@ def train(cfg: TrainPipelineConfig):
 
     elif getattr(cfg, "use_prefix_tuning", False):
         # Prefix tuning (custom implementation)
-        pt_cfg_obj = PTConfig(**(cfg.prefix_tuning_cfg or {})) if hasattr(cfg, "prefix_tuning_cfg") else PTConfig()
+        pt_cfg_obj = PrefixTuningConfig(**(cfg.prefix_tuning_cfg or {}))
         policy, _ = inject_prefix_tuning(policy, pt_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
         freeze_non_adapters(policy)

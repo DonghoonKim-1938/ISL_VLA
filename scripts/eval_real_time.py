@@ -42,9 +42,8 @@ from configs import parser
 from common.policies.factory import make_policy
 # Adapter injection utilities
 from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
-from common.policies.prefix_tuning import inject_prefix_tuning
+from common.policies.prefix_tuning import inject_prefix_tuning, PrefixTuningConfig
 from common.policies.lora_moe import inject_lora_moe
-from common.policies.prefix_tuning import PrefixTuningConfig as PTConfig
 from common.policies.lora_moe import LoRAMoEConfig
 from common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from common.utils.adapter_utils import load_adapters
@@ -115,7 +114,7 @@ def eval_main(cfg: EvalRealTimeOursPipelineConfig):
         lora_cfg_obj = InjectLoRAConfig(**(cfg.lora_cfg or {}))
         policy, _ = inject_lora(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
     elif getattr(cfg, "use_prefix_tuning", False):
-        pt_cfg_obj = PTConfig(**(cfg.prefix_tuning_cfg or {}))
+        pt_cfg_obj = PrefixTuningConfig(**(cfg.prefix_tuning_cfg or {}))
         policy, _ = inject_prefix_tuning(policy, pt_cfg_obj, target_keywords=cfg.target_keywords)
     elif getattr(cfg, "use_lora_moe", False):
         lora_moe_cfg_obj = LoRAMoEConfig(**(cfg.lora_moe_cfg or {}))
