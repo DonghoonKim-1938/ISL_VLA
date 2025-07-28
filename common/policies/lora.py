@@ -120,14 +120,10 @@ class LoRALinear(nn.Module):
         base_out = self.base(x)
         x_dp = self.dropout(x)
 
-        # einsum on bf16 can raise errors on some devices; compute in fp32 then cast back
-        orig_dtype = x_dp.dtype
-        x_fp32 = x_dp.float()
+        proj_r   = F.linear(x_dp, self.A)          # (..., r)
+        lora_out = F.linear(proj_r, self.B)        # (..., out)
 
-        proj_r   = F.linear(x_fp32, self.A.float())          # (..., r)
-        lora_out = F.linear(proj_r, self.B.float())          # (..., out)
-
-        lora_out = lora_out.to(orig_dtype) * self.cfg.scale
+        lora_out = lora_out * self.cfg.scale
         return base_out + lora_out
 
 

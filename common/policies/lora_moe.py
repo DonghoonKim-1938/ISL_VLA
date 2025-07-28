@@ -91,19 +91,15 @@ class MoELoRALinear(nn.Module):
         x_dp = self.dropout(x)
 
         # Compute gates
-        gates = torch.softmax(self.router(x_dp.float()), dim=-1)  # (..., E) – router in fp32 for stability
+        gates = torch.softmax(self.router(x_dp), dim=-1)  # (..., E)
 
-        orig_dtype = x_dp.dtype
-        x_fp32 = x_dp.float()
-
-        # ---------- LoRA projection without einsum ----------
         # Flatten leading dims for batched matmul
-        leading_shape = x_fp32.shape[:-1]              # (...)
-        in_f = self.base.in_features # Get in_f from base
-        x_flat = x_fp32.reshape(-1, in_f)              # (N, in)
+        leading_shape = x_dp.shape[:-1]              # (...)
+        in_f = self.base.in_features
+        x_flat = x_dp.reshape(-1, in_f)              # (N, in)
 
-        A_t = self.A.float().transpose(2, 1)           # (E, in, r)
-        B_t = self.B.float().transpose(2, 1)           # (E, r, out)
+        A_t = self.A.transpose(2, 1)           # (E, in, r)
+        B_t = self.B.transpose(2, 1)           # (E, r, out)
 
         # (N, 1, in) × (E, in, r) -> (N, E, r)
         proj_r = torch.matmul(x_flat.unsqueeze(1), A_t)  # (N, E, r)
@@ -118,7 +114,6 @@ class MoELoRALinear(nn.Module):
         weighted = (gates * self.cfg.scale).unsqueeze(-1) * lora_out  # (..., E, out)
         lora_mix = weighted.sum(dim=-2)                                # (..., out)
         
-        lora_mix = lora_mix.to(orig_dtype)
         return base_out + lora_mix
 
 
