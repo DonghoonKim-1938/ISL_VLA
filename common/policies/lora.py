@@ -69,6 +69,7 @@ class LoRALinear(nn.Module):
 
         self.dropout = nn.Dropout(cfg.dropout) if cfg.dropout > 0.0 else nn.Identity()
 
+    @property
     def weight(self):
         return self.base.weight
 
