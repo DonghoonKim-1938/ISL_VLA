@@ -70,7 +70,8 @@ class MoELoRALinear(nn.Module):
 
         # Router (token‑wise gating)
         self.router = nn.Linear(in_f, cfg.num_experts, bias=False)
-        nn.init.zeros_(self.router.weight)
+        self.router.weight.data.zero_()
+        self.router.to(dtype=base.weight.dtype)
 
         self.dropout = nn.Dropout(cfg.dropout) if cfg.dropout > 0.0 else nn.Identity()
 
