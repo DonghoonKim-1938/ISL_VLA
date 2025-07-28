@@ -128,9 +128,10 @@ def test_policy(
     start_time = time.perf_counter()
     device = get_device_from_parameters(policy)
     policy.eval()
-    with torch.autocast(device_type=device.type) if use_amp else nullcontext():
-        loss, output_dict = policy.forward(batch)
-        # TODO(rcadene): policy.unnormalize_outputs(out_dict)
+    with torch.no_grad():
+        with torch.autocast(device_type=device.type) if use_amp else nullcontext():
+            loss, output_dict = policy.forward(batch)
+            # TODO(rcadene): policy.unnormalize_outputs(out_dict)
 
     test_metrics.loss = loss.item()
     return test_metrics, output_dict
@@ -239,10 +240,8 @@ def train(cfg: TrainPipelineConfig):
     train_dataloader = make_dataloader(cfg, train_dataset, device)
     train_dl_iter = cycle(train_dataloader)
 
-    cfg.batch_size = cfg.batch_size // 2
     test_dataloader = make_dataloader(cfg, test_dataset, device)
     test_dl_iter = cycle(test_dataloader)
-    cfg.batch_size = 2*cfg.batch_size
 
     # Determine MoE balance coeff if needed
     moe_aux_cfg = None
@@ -284,6 +283,7 @@ def train(cfg: TrainPipelineConfig):
     )
 
     logging.info("Start offline training on a fixed dataset")
+
     for _ in range(step, cfg.steps):
         if cfg.use_ddp:
             dist.barrier()
@@ -295,7 +295,6 @@ def train(cfg: TrainPipelineConfig):
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(device, non_blocking=True)
-
         train_tracker, output_dict = update_policy(
             train_tracker,
             policy,
