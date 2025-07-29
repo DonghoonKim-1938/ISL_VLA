@@ -62,8 +62,8 @@ class MoELoRALinear(nn.Module):
             in_f, out_f = out_f, in_f
 
         # LoRA expert parameters – grouped tensors for efficiency
-        self.A = nn.Parameter(torch.zeros(cfg.num_experts, cfg.r, in_f))  # (E, r, in)
-        self.B = nn.Parameter(torch.zeros(cfg.num_experts, out_f, cfg.r))  # (E, out, r)
+        self.A = nn.Parameter(torch.zeros(cfg.num_experts, cfg.r, in_f, dtype=base.weight.dtype))  # (E, r, in)
+        self.B = nn.Parameter(torch.zeros(cfg.num_experts, out_f, cfg.r, dtype=base.weight.dtype))  # (E, out, r)
         # Init per LoRA paper
         nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
         nn.init.zeros_(self.B)
@@ -97,19 +97,22 @@ class MoELoRALinear(nn.Module):
         # Flatten leading dims for batched matmul
         leading_shape = x_dp.shape[:-1]              # (...)
         in_f = self.base.in_features
-        x_flat = x_dp.reshape(-1, in_f)              # (N, in)
+        # x_flat = x_dp.reshape(-1, in_f)              # (N, in)
 
-        A_t = self.A.transpose(2, 1)           # (E, in, r)
-        B_t = self.B.transpose(2, 1)           # (E, r, out)
+        A_t = self.A.transpose(-1, 1)           # (E, in, r)
+        B_t = self.B.transpose(-1, 1)           # (E, r, out)
 
         # (N, 1, in) × (E, in, r) -> (N, E, r)
-        proj_r = torch.matmul(x_flat.unsqueeze(1), A_t)  # (N, E, r)
+        # proj_r = torch.matmul(x_flat.unsqueeze(1), A_t)  # (N, E, r)
+        proj_r = torch.matmul(x_dp.unsqueeze(1), A_t.unsqueeze(0))   # (B, E, S, r)
 
         # (N, E, r) × (E, r, out) -> (N, E, out)
-        lora_out = torch.matmul(proj_r, B_t)             # (N, E, out)
+        # lora_out = torch.matmul(proj_r, B_t)             # (N, E, out)
+        lora_out = torch.matmul(proj_r, B_t.unsqueeze(0))   # (B, E, S, out)
 
         # Restore leading shape
-        lora_out = lora_out.reshape(*leading_shape, self.cfg.num_experts, out_f)
+        out_f = self.base.out_features
+        lora_out = lora_out.transpose(1,2).reshape(*leading_shape, self.cfg.num_experts, out_f)
 
         # Weighted sum over experts without einsum: (..., E, out)
         weighted = (gates * self.cfg.scale).unsqueeze(-1) * lora_out  # (..., E, out)

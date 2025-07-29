@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from typing import Tuple
 
+from common.policies.lora_moe import MoELoRALinear
+
 # ---------- ① Load‑Balancing Loss (Switch 스타일) ----------
 def router_balance_loss(
     model: nn.Module,

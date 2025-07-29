@@ -585,7 +585,9 @@ class PI0FlowMatching(nn.Module):
         att_masks = []
 
         # Embed state
+        state = state.unsqueeze(1)
         state_emb = self.state_proj(state)
+        state_emb = state_emb.squeeze(1)
         state_emb = state_emb.to(dtype=torch.bfloat16)
         embs.append(state_emb[:, None, :])
         bsize = state_emb.shape[0]
