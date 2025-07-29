@@ -61,8 +61,8 @@ class LoRALinear(nn.Module):
             in_f, out_f = out_f, in_f
 
         # LoRA parameters (rank-r decomposition)
-        self.A = nn.Parameter(torch.zeros(cfg.r, in_f))  # (r, in)
-        self.B = nn.Parameter(torch.zeros(out_f, cfg.r))  # (out, r)
+        self.A = nn.Parameter(torch.zeros(cfg.r, in_f, dtype=base.weight.dtype))  # (r, in)
+        self.B = nn.Parameter(torch.zeros(out_f, cfg.r, dtype=base.weight.dtype))  # (out, r)
 
         # Initialization per LoRA paper
         nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
