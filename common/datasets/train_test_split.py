@@ -32,6 +32,6 @@ def split_train_test(root, dataset_size, test_size=0.1):
 
 
 if __name__=="__main__":
-    root_dir = "/datasets/piper_grape0724/lerobot_5hz"
-    dataset_size = 600
+    root_dir = "/datasets/piper_corn_grape_0717_1.2k/lerobot_5hz"
+    dataset_size = 1200
     split_train_test(root_dir, dataset_size, test_size=0.1)

@@ -54,7 +54,11 @@ GRIPPER_EFFORT = 500
 TASK_LIST = [
     "test",
     "align the cups",
-    "pick the grape and put it to the basket"
+    "pick the grape and put it to the basket",
+    "pick the corn and put it to the basket",
+    "open the pot",
+    "pour the block into the basket",
+    "push the button",
 ]
 
 META_INFO_TEMPLATE = {
