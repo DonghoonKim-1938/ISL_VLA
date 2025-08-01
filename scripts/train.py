@@ -7,11 +7,12 @@ from pprint import pformat
 from typing import Any
 
 # LoRA / Prefix / LoRA-MoE injection utilities
+# from common.policies.quantization import QuantizationConfig
+from common.policies.qlora import inject_qlora, QLoRAConfig as InjectQLoRAConfig
 from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
 from common.policies.prefix_tuning import inject_prefix_tuning, PrefixTuningConfig
-from common.policies.lora_moe import inject_lora_moe
-from common.policies.prefix_tuning import PrefixTuningConfig as PTConfig
-from common.policies.lora_moe import LoRAMoEConfig
+from common.policies.lora_moe import inject_lora_moe, LoRAMoEConfig
+from common.policies.quantization import QuantizationConfig, quantize_model
 
 import torch
 from termcolor import colored
@@ -177,11 +178,18 @@ def train(cfg: TrainPipelineConfig):
     logging.info("Creating policy")
     policy = make_policy(
         cfg=cfg.policy,
-        ds_meta = train_dataset.meta
+        ds_meta = train_dataset.meta,
     )
 
     # Adapter tuning options -------------------------------------------------
-    if getattr(cfg, "use_lora", False):
+    if getattr(cfg, "use_qlora", False):
+        qlora_cfg_obj = InjectQLoRAConfig(**(cfg.qlora_cfg or {})) if hasattr(cfg, "qlora_cfg") else InjectQLoRAConfig()
+        policy, _ = inject_qlora(policy, qlora_cfg_obj)
+        policy = policy.to(device=device)
+        freeze_non_adapters(policy)
+        logging.info("Injected QLoRA modules")
+
+    elif getattr(cfg, "use_lora", False):
         # Standard LoRA (rank=16 by default)
         lora_cfg_obj = InjectLoRAConfig(**(cfg.lora_cfg or {})) if hasattr(cfg, "lora_cfg") else InjectLoRAConfig()
         policy, _ = inject_lora(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)

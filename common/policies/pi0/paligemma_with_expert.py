@@ -317,7 +317,7 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
                 if hidden_states is not None:
                     end = start + hidden_states.shape[1]
 
-                    if att_output.dtype != layer.self_attn.o_proj.weight.dtype:
+                    if (att_output.dtype != layer.self_attn.o_proj.weight.dtype) and (layer.self_attn.o_proj.weight.dtype == torch.bfloat16):
                         att_output = att_output.to(layer.self_attn.o_proj.weight.dtype)
                     out_emb = layer.self_attn.o_proj(att_output[:, start:end])
 

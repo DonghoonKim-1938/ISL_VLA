@@ -66,6 +66,8 @@ class TrainPipelineConfig(HubMixin):
     eval: EvalConfig = field(default_factory=EvalConfig)
     wandb: WandBConfig = field(default_factory=WandBConfig)
 
+    use_quantization: bool | None = False
+    use_qlora: bool | None = False
     use_lora: bool | None = False
     use_prefix_tuning: bool | None = False
     use_lora_moe: bool | None = False
@@ -76,6 +78,7 @@ class TrainPipelineConfig(HubMixin):
     target_keywords: list[str] | None = None
 
     # Adapter specific hyper-parameters (overrides defaults).
+
     lora_cfg: dict[str, Any] | None = None
     prefix_tuning_cfg: dict[str, Any] | None = None
     lora_moe_cfg: dict[str, Any] | None = None
