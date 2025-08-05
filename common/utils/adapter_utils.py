@@ -51,4 +51,4 @@ def load_adapters(
         raise FileNotFoundError(adapters_file)
     state = sft.load_file(str(adapters_file), device=str(device))
     res = model.load_state_dict(state, strict=False)
-    return res 
+    return res, model

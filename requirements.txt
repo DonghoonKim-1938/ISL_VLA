@@ -232,8 +232,6 @@ jsonlines==4.0.0
 kiwisolver==1.4.8
 labmaze==1.0.6
 lazy_loader==0.4
-# Editable install with no version control (lerobot==0.1.0)
--e /home/uhnam/workspace/lerobot/lerobot
 llvmlite==0.44.0
 lxml==5.3.1
 MarkupSafe==3.0.2
@@ -288,7 +286,7 @@ pymunk==6.11.1
 pynput==1.8.0
 PyOpenGL==3.1.9
 pyparsing==3.2.1
-pyrealsense2==2.55.1.6486
+pyrealsense2==2.54.2.5684
 PySocks==1.7.1
 pytest==8.3.5
 python-can==4.5.0

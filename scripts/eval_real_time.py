@@ -51,7 +51,7 @@ def create_batch(piper, exo_rs_cam, wrist_rs_cam, use_devices, task, use_end_pos
     if use_devices:
         return {
             'observation.state': read_end_pose_msg(piper) if use_end_pose else read_joint_msg(piper),
-            'observation.images.exo': exo_rs_cam.image_for_inference(),
+            'observation.images.table': exo_rs_cam.image_for_inference(),
             'observation.images.wrist': wrist_rs_cam.image_for_inference(),
             'task': [task],
         }
@@ -86,6 +86,8 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
         listener, event = None, None
 
     logging.info(pformat(cfg.to_dict()))
+    cfg.target_keywords = ['q_proj', 'k_proj', 'v_proj']
+    cfg.task = 'open the pot'
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
     torch.backends.cudnn.benchmark = True
@@ -145,15 +147,8 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
         else:
             adapters_file = None
 
-        model_file = pretrained_path / "model.safetensors"
-
-        if adapters_file.exists():
-            load_adapters(policy, adapters_file, device=device)
-        elif model_file.exists():
-            state = sft.load_file(str(model_file), device=str(device))
-            policy.load_state_dict(state, strict=True)
-        else:
-            raise FileNotFoundError("No adapters.safetensors or model.safetensors found in " + str(pretrained_path))
+        if adapters_file and adapters_file.exists():
+            res, policy = load_adapters(policy, adapters_file, device=device)
 
     ###############
     # LOG BEFORE EVAL
@@ -198,7 +193,7 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
             continue
 
         # create batch
-        batch = create_batch(piper, exo_rs_cam, wrist_rs_cam, cfg.use_devices, cfg.task)
+        batch = create_batch(piper, table_rs_cam, wrist_rs_cam, cfg.use_devices, cfg.task)
         t_create_batch = log_time()
 
         for key in batch:
@@ -208,7 +203,7 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
 
         # infer data
         action_pred = policy.select_action(batch).squeeze()
-        if len(policy._action_queue) < 40:
+        if len(policy._action_queue) < 0:
             policy.reset()
         logged_time = policy.logged_time
         t_action_pred = log_time()
