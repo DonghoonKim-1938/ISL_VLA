@@ -19,6 +19,7 @@ import torch
 from huggingface_hub.constants import HF_HOME
 
 OBS_ENV = "observation.environment_state"
+OBS_STATE = "observation.state"
 OBS_ROBOT = "observation.state"
 OBS_IMAGE = "observation.image"
 OBS_IMAGES = "observation.images"

@@ -59,6 +59,11 @@ def get_policy_class(name: str) -> PreTrainedPolicy:
         from common.policies.pi0fast.modeling_pi0fast import PI0FASTPolicy
 
         return PI0FASTPolicy
+
+    elif name == "smolvla":
+        from common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+
+        return SmolVLAPolicy
     else:
         raise NotImplementedError(f"Policy with name {name} is not implemented.")
 
