@@ -252,10 +252,10 @@ def create_meta(root_dir, episodes):
 
 
 if __name__ == "__main__":
-    root_dir = "/datasets/piper_grape0711/lerobot_5hz/train"
-    episodes = 1944
+    root_dir = "/datasets/open_the_pot/lerobot"
+    episodes = 120
     create_meta(root_dir, episodes)
 
-    root_dir = "/datasets/piper_grape0711/lerobot_5hz/test"
-    episodes = 216
-    create_meta(root_dir, episodes)
+    # root_dir = "/datasets/piper_grape0711/lerobot_5hz/test"
+    # episodes = 216
+    # create_meta(root_dir, episodes)

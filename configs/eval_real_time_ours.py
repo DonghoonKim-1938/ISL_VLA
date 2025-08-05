@@ -4,8 +4,13 @@ from dataclasses import dataclass, field
 from typing import Any
 from pathlib import Path
 import draccus
+from peft import LoraConfig
 
 from common import envs, policies  # noqa: F401
+from common.policies.lora_moe import LoRAMoEConfig
+from common.policies.prefix_tuning import PrefixTuningConfig
+from common.policies.qlora import QLoRAConfig
+from common.policies.lora import LoRAConfig
 from configs import parser
 from configs.default import DatasetConfig, EvalConfig, WandBConfig
 from configs.policies import PreTrainedConfig
@@ -34,16 +39,20 @@ class EvalRealTimeOursPipelineConfig:
     max_steps: int = 1000000
     cam_list: list[str] = field(default_factory=lambda: ['wrist', 'exo', 'table'])
 
+    # Adapter configs
+    adapter_path: Path | None = None
+    qlora_cfg: QLoRAConfig | None = None
+    lora_cfg: LoraConfig | None = None
+    pt_cfg: PrefixTuningConfig | None = None
+    lora_moe_cfg: LoRAMoEConfig | None = None
+
     # Adapter options
+    use_qlora: bool | None = False
     use_lora: bool | None = False
     use_prefix_tuning: bool | None = False
     use_lora_moe: bool | None = False
     target_keywords: list[str] | None = None
 
-    # Adapter hyper-parameters
-    lora_cfg: dict[str, Any] | None = None
-    prefix_tuning_cfg: dict[str, Any] | None = None
-    lora_moe_cfg: dict[str, Any] | None = None
 
     def __post_init__(self):
         # HACK: We parse again the cli args here to get the pretrained path if there was one.

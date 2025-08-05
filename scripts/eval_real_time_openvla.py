@@ -103,7 +103,7 @@ def eval_main(cfg: EvalRealTimeOursPipelineConfig):
     if cfg.use_devices:
         table_rs_cam.start_recording()
         logging.info("Devices started recording")
-    policy.eval()
+    policy.eval_real_time()
     logging.info("Start offline evaluation on a fixed dataset")
     # buffer = [[] for _ in range(policy.config.n_action_steps)]
     action_pred_list = []

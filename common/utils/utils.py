@@ -18,8 +18,9 @@ import os
 import os.path as osp
 import platform
 import subprocess
+import time
 from copy import copy
-from datetime import datetime, timezone, time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np

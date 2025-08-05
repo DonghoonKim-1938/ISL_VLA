@@ -7,7 +7,6 @@ from pprint import pformat
 from typing import Any
 
 # LoRA / Prefix / LoRA-MoE injection utilities
-# from common.policies.quantization import QuantizationConfig
 from common.policies.qlora import inject_qlora, QLoRAConfig as InjectQLoRAConfig
 from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
 from common.policies.prefix_tuning import inject_prefix_tuning, PrefixTuningConfig
@@ -141,6 +140,7 @@ def test_policy(
 @parser.wrap()
 def train(cfg: TrainPipelineConfig):
     cfg.validate()
+    cfg.target_keywords=["q_proj","k_proj","v_proj"]
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -184,7 +184,7 @@ def train(cfg: TrainPipelineConfig):
     # Adapter tuning options -------------------------------------------------
     if getattr(cfg, "use_qlora", False):
         qlora_cfg_obj = InjectQLoRAConfig(**(cfg.qlora_cfg or {})) if hasattr(cfg, "qlora_cfg") else InjectQLoRAConfig()
-        policy, _ = inject_qlora(policy, qlora_cfg_obj)
+        policy, _ = inject_qlora(policy, qlora_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
         freeze_non_adapters(policy)
         logging.info("Injected QLoRA modules")

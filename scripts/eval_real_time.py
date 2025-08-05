@@ -1,22 +1,17 @@
 import time
 import logging
-from pprint import pformat, pp
+from pprint import pformat
 from dataclasses import asdict
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 from termcolor import colored
 import torch
-from pathlib import Path
 import safetensors.torch as sft
 import copy
-import numpy as np
-from huggingface_hub import login
-
-from piper_sdk import C_PiperInterface
 
 from common.constants import GRIPPER_EFFORT
-from common.robot_devices.cam_utils import RealSenseCamera
-from common.robot_devices.robot_utils import read_end_pose_msg, set_zero_configuration, ctrl_end_pose
+from common.robot_devices.robot_utils import read_end_pose_msg, ctrl_end_pose, read_joint_msg, set_zero_configuration
 from common.utils.utils import (
     load_buffer,
     get_current_action,
@@ -36,11 +31,14 @@ from common.utils.utils import (
     get_safe_torch_device,
     init_logging,
     format_big_number,
+    init_keyboard_listener
 )
 from configs import parser
 
 from common.policies.factory import make_policy
+
 # Adapter injection utilities
+from common.policies.qlora import inject_qlora, QLoRAConfig as InjectQLoRAConfig
 from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
 from common.policies.prefix_tuning import inject_prefix_tuning, PrefixTuningConfig
 from common.policies.lora_moe import inject_lora_moe
@@ -49,10 +47,10 @@ from common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from common.utils.adapter_utils import load_adapters
 
 
-def create_batch(piper, exo_rs_cam, wrist_rs_cam, use_devices, task):
+def create_batch(piper, exo_rs_cam, wrist_rs_cam, use_devices, task, use_end_pose: bool = True):
     if use_devices:
         return {
-            'observation.state': read_end_pose_msg(piper),
+            'observation.state': read_end_pose_msg(piper) if use_end_pose else read_joint_msg(piper),
             'observation.images.exo': exo_rs_cam.image_for_inference(),
             'observation.images.wrist': wrist_rs_cam.image_for_inference(),
             'task': [task],
@@ -67,33 +65,39 @@ def create_batch(piper, exo_rs_cam, wrist_rs_cam, use_devices, task):
 
 
 @parser.wrap()
-def eval_main(cfg: EvalRealTimeOursPipelineConfig):
-    logging.info(pformat(asdict(cfg)))
+def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
+    ###############
+    # INIT DEVICES
+    ###############
     if cfg.use_devices:
         piper, cam = init_devices(cfg)
         wrist_rs_cam = cam['wrist_rs_cam']
         exo_rs_cam = cam['exo_rs_cam']
         table_rs_cam = cam['table_rs_cam']
+
+        listener, event = init_keyboard_listener()
+
     else:
         piper = None
         wrist_rs_cam = None
         exo_rs_cam = None
         table_rs_cam = None
 
-    if cfg.wandb.enable and cfg.wandb.project:
-        wandb_logger = WandBLogger(cfg)
-    else:
-        wandb_logger = None
-        logging.info(colored("Logs will be saved locally.", "yellow", attrs=["bold"]))
+        listener, event = None, None
+
+    logging.info(pformat(cfg.to_dict()))
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
-
     torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
-    set_seed(cfg.seed)
+
+    if cfg.seed is not None:
+        set_seed(cfg.seed)
 
     logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
 
+    ###############
+    # LOAD DATASET
+    ###############
     logging.info("Creating dataset")
     train_dataset_meta = LeRobotDatasetMetadata(
         cfg.train_dataset.repo_id, cfg.train_dataset.root, revision=cfg.train_dataset.revision
@@ -101,29 +105,46 @@ def eval_main(cfg: EvalRealTimeOursPipelineConfig):
 
     logging.info("Making policy.")
 
-    policy_cfg = copy.deepcopy(cfg.policy)
-    pretrained_path = Path(policy_cfg.pretrained_path) if policy_cfg and policy_cfg.pretrained_path else None
+    pretrained_path = Path(cfg.policy.pretrained_path) if cfg.policy and cfg.policy.pretrained_path else None
+    adapter_path = Path(cfg.adapter_path) if cfg.adapter_path else None
 
+    ###############
+    # MAKE POLICY
+    ###############
     policy = make_policy(
-        cfg=policy_cfg,
+        cfg=cfg.policy,
         ds_meta=train_dataset_meta,
     )
 
     # Adapter injection
-    if getattr(cfg, "use_lora", False):
+    if getattr(cfg, "use_qlora", False):
+        qlora_cfg_obj = InjectQLoRAConfig(**(cfg.qlora_cfg or {}))
+        policy, _ = inject_qlora(policy, qlora_cfg_obj, target_keywords=cfg.target_keywords)
+        logging.info("Injected QLoRA modules")
+
+    elif getattr(cfg, "use_lora", False):
         lora_cfg_obj = InjectLoRAConfig(**(cfg.lora_cfg or {}))
         policy, _ = inject_lora(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
+        logging.info("Injected LoRA modules")
+
     elif getattr(cfg, "use_prefix_tuning", False):
         pt_cfg_obj = PrefixTuningConfig(**(cfg.prefix_tuning_cfg or {}))
         policy, _ = inject_prefix_tuning(policy, pt_cfg_obj, target_keywords=cfg.target_keywords)
+        logging.info("Injected Prefix-Tuning modules")
+
     elif getattr(cfg, "use_lora_moe", False):
         lora_moe_cfg_obj = LoRAMoEConfig(**(cfg.lora_moe_cfg or {}))
         policy, _ = inject_lora_moe(policy, lora_moe_cfg_obj, target_keywords=cfg.target_keywords)
+        logging.info("Injected LoRA-MoE modules")
 
     policy.to(device)
 
     if pretrained_path and pretrained_path.is_dir():
-        adapters_file = pretrained_path / "adapters.safetensors"
+        if cfg.use_qlora or cfg.use_lora or cfg.use_prefix_tuning:
+            adapters_file = cfg.adapter_path / "adapters.safetensors"
+        else:
+            adapters_file = None
+
         model_file = pretrained_path / "model.safetensors"
 
         if adapters_file.exists():
@@ -134,6 +155,9 @@ def eval_main(cfg: EvalRealTimeOursPipelineConfig):
         else:
             raise FileNotFoundError("No adapters.safetensors or model.safetensors found in " + str(pretrained_path))
 
+    ###############
+    # LOG BEFORE EVAL
+    ###############
     step = 0
     num_total_params = sum(p.numel() for p in policy.parameters())
 
@@ -158,60 +182,23 @@ def eval_main(cfg: EvalRealTimeOursPipelineConfig):
     fig_2d, ax_2d = plt.subplots(4, 2, figsize=[25, 15])
     fig_3d, ax_3d = plt.subplots(subplot_kw={'projection': '3d'}, figsize=[25, 15])
 
-    import pandas as pd
-    from pathlib import Path
-    data_dir = Path("/home/minji/Desktop/codes/lerobot/data/Pick/chunk-000/episode_000000_5hz.parquet")
-    df = pd.read_parquet(data_dir)
-    act = df['action']
-
-    for i in range(10, 40):
-        print(f'step: {i}')
-        end_pose_data = act[i][:6].tolist()
-        gripper_data = [torch.tensor(act[i][6]), GRIPPER_EFFORT]
-        ctrl_end_pose(piper, end_pose_data, gripper_data) if piper is not None else None
-        time.sleep(0.5)
-        print(f'resting...')
-
-    state = df['observation.state']
-    for i in range(10, 40):
-        print(f'step: {i}')
-        stt = read_end_pose_msg(piper)
-        end_pose_data = (stt[0][:6] + (state[i + 1][:6] - state[i][:6])).tolist()
-        gripper_data = [torch.tensor(stt[0][6] + state[i + 1][6] - state[i][6]), GRIPPER_EFFORT]
-        ctrl_end_pose(piper, end_pose_data, gripper_data) if piper is not None else None
-        time.sleep(0.5)
-        print(f'resting...')
-    # import os
-    #
-    # save_dir = "saved_figures_pi0"
-    # os.makedirs(save_dir, exist_ok=True)
-
+    ###############
+    # EVAL LOOP
+    ###############
     while True:
         t_start = log_time()
 
+        # emergency stop
+        if cfg.use_devices and event["stop recording"]:
+            set_zero_configuration(piper)
+            time.sleep(1)
+            logging.info('EMERGENCY STOP... RESTARTING...')
+            policy.reset()
+            event['stop recording'] = False
+            continue
+
         # create batch
         batch = create_batch(piper, exo_rs_cam, wrist_rs_cam, cfg.use_devices, cfg.task)
-
-        # table_img = batch['observation.images.table']
-        # wrist_img = batch['observation.images.wrist']
-        #
-        # filename1 = f"fig_table{step}.png"
-        # filename2 = f"fig_wrist{step}.png"
-        # filepath1 = os.path.join(save_dir, filename1)
-        # filepath2 = os.path.join(save_dir, filename2)
-        #
-        # plt.figure()
-        # plt.imshow(table_img[0].permute(1, 2, 0).cpu().numpy())
-        # plt.axis('off')
-        # plt.savefig(filepath1, bbox_inches='tight', pad_inches=0)
-        # plt.close()
-        #
-        # plt.figure()
-        # plt.imshow(wrist_img[0].permute(1, 2, 0).cpu().numpy())
-        # plt.axis('off')
-        # plt.savefig(filepath2, bbox_inches='tight', pad_inches=0)
-        # plt.close()
-
         t_create_batch = log_time()
 
         for key in batch:
@@ -244,7 +231,6 @@ def eval_main(cfg: EvalRealTimeOursPipelineConfig):
         action_pred_list.append(action_pred.cpu() if isinstance(action_pred, torch.Tensor) else action_pred)
 
         step += 1
-        # time.sleep(max(0, 1 / cfg.fps - (time.time() - t_start)))
         time.sleep(0.2)
 
         t_total = log_time()
@@ -263,10 +249,10 @@ def eval_main(cfg: EvalRealTimeOursPipelineConfig):
         pass
 
     plot_trajectory(ax_2d, action_pred_list)
-    pretty_plot(ax_2d)
+    pretty_plot(fig_2d, ax_2d, title='2d traj')
 
     plot_trajectory(ax_3d, action_pred_list, projection='3d')
-    pretty_plot(ax_3d)
+    pretty_plot(fig_3d, ax_3d, title='3d traj')
 
     fig_2d.show()
     fig_3d.show()
@@ -274,4 +260,4 @@ def eval_main(cfg: EvalRealTimeOursPipelineConfig):
 
 if __name__ == "__main__":
     init_logging()
-    eval_main()
+    eval_real_time()
