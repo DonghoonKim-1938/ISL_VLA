@@ -58,6 +58,7 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
 from transformers import AutoTokenizer
+from common.utils.model_utils import compute_param_norm, compute_grad_norm
 
 from common.constants import ACTION, OBS_ROBOT
 from common.policies.normalize import Normalize, Unnormalize
@@ -267,6 +268,97 @@ class PI0Policy(PreTrainedPolicy):
 
     def get_output_embeddings(self) -> nn.Module:
         return self.model.get_output_embeddings()
+
+    # ---------------------------------------------------------
+    # Component-wise norm helpers (vision, language, action generator)
+    # ---------------------------------------------------------
+
+    def get_component_norms(self) -> dict[str, float]:
+        """Return L2 norms of parameters and gradients for main Pi0 components.
+
+        Returns a dictionary with keys:
+            vision_param_norm, vision_grad_norm,
+            lang_param_norm, lang_grad_norm,
+            action_param_norm, action_grad_norm
+
+        Gradient norms require that backward() has already been executed in the
+        current iteration.
+        """
+
+        # Vision tower (frozen or trainable)
+        vision_modules = [self.model.paligemma_with_expert.paligemma.vision_tower]
+
+        # Language model (PaliGemma text encoder)
+        lang_modules = [self.model.paligemma_with_expert.paligemma.language_model]
+
+        # Action generator (Gemma expert + projection / MLP blocks)
+        action_modules = [
+            self.model.paligemma_with_expert.gemma_expert,
+            self.model.state_proj,
+            self.model.action_in_proj,
+            self.model.action_out_proj,
+            self.model.action_time_mlp_in,
+            self.model.action_time_mlp_out,
+        ]
+
+        # Compute L2 norms
+        vision_param_norm_sq = 0.0
+        vision_grad_norm_sq = 0.0
+        for m in vision_modules:
+            vision_param_norm_sq += compute_param_norm(m, only_trainable=False) ** 2
+            vision_grad_norm_sq += compute_grad_norm(m, only_trainable=False) ** 2
+
+        lang_param_norm_sq = 0.0
+        lang_grad_norm_sq = 0.0
+        for m in lang_modules:
+            lang_param_norm_sq += compute_param_norm(m, only_trainable=False) ** 2
+            lang_grad_norm_sq += compute_grad_norm(m, only_trainable=False) ** 2
+
+        action_param_norm_sq = 0.0
+        action_grad_norm_sq = 0.0
+        for m in action_modules:
+            action_param_norm_sq += compute_param_norm(m, only_trainable=False) ** 2
+            action_grad_norm_sq += compute_grad_norm(m, only_trainable=False) ** 2
+
+        metrics = {
+            "vision_param_norm": vision_param_norm_sq ** 0.5,
+            "vision_grad_norm": vision_grad_norm_sq ** 0.5,
+            "lang_param_norm": lang_param_norm_sq ** 0.5,
+            "lang_grad_norm": lang_grad_norm_sq ** 0.5,
+            "action_param_norm": action_param_norm_sq ** 0.5,
+            "action_grad_norm": action_grad_norm_sq ** 0.5,
+        }
+
+        return metrics
+
+    def unfreeze_action_out_proj(self):
+        """Freeze all parameters in the network except ``action_out_proj``.
+
+        Useful for linear probing setups where only the final action projection
+        is trained.
+        """
+        # Freeze everything
+        for p in self.parameters():
+            p.requires_grad = False
+
+        # Unfreeze action_out_proj weights
+        for p in self.action_out_proj.parameters():
+            p.requires_grad = True
+
+    def unfreeze_linear_layers(self):
+        """Freeze all parameters in the network except linear layers.
+
+        Useful for LoRA setups where only linear layers are adapted.
+        """
+        # Freeze everything first
+        for p in self.parameters():
+            p.requires_grad = False
+
+        # Unfreeze all linear layers
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Linear):
+                for p in module.parameters():
+                    p.requires_grad = True
 
     @torch.no_grad
     def select_action(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
