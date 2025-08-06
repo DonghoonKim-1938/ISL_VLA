@@ -16,7 +16,7 @@ from common.policies.quantization import QuantizationConfig, quantize_model
 import torch
 from termcolor import colored
 from torch.amp import GradScaler
-from torch.nn.parallel import DistributedDataParallel
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import Optimizer
 import torch.distributed as dist
 
@@ -31,7 +31,7 @@ from common.utils.train_utils import (
     update_last_checkpoint,
     save_training_state,
 )
-from common.utils.model_utils import compute_param_norm, freeze_non_adapters
+from common.utils.model_utils import compute_param_norm, compute_grad_norm, freeze_non_adapters
 from common.policies.moe_utils import moe_aux_loss
 from common.utils.utils import (
     format_big_number,
@@ -99,6 +99,22 @@ def update_policy(
     # Updates the scale for next iteration.
     grad_scaler.update()
 
+    # Component-wise norms (Pi0-specific) -- computed inside the model for minimal trainer changes
+    vision_param_norm = vision_grad_norm = 0.0
+    lang_param_norm = lang_grad_norm = 0.0
+    action_param_norm = action_grad_norm = 0.0
+
+    _policy_obj = policy.module if isinstance(policy, DDP) else policy
+
+    if hasattr(_policy_obj, "get_component_norms"):
+        comp_norms = _policy_obj.get_component_norms()
+        vision_param_norm = comp_norms.get("vision_param_norm", 0.0)
+        vision_grad_norm = comp_norms.get("vision_grad_norm", 0.0)
+        lang_param_norm = comp_norms.get("lang_param_norm", 0.0)
+        lang_grad_norm = comp_norms.get("lang_grad_norm", 0.0)
+        action_param_norm = comp_norms.get("action_param_norm", 0.0)
+        action_grad_norm = comp_norms.get("action_grad_norm", 0.0)
+
     param_norm = compute_param_norm(policy, only_trainable=True)
 
     optimizer.zero_grad()
@@ -114,6 +130,12 @@ def update_policy(
     train_metrics.loss = loss.item()
     train_metrics.grad_norm = grad_norm.item()
     train_metrics.param_norm = param_norm
+    train_metrics.vision_param_norm = vision_param_norm
+    train_metrics.vision_grad_norm = vision_grad_norm
+    train_metrics.lang_param_norm = lang_param_norm
+    train_metrics.lang_grad_norm = lang_grad_norm
+    train_metrics.action_param_norm = action_param_norm
+    train_metrics.action_grad_norm = action_grad_norm
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
     return train_metrics, output_dict
@@ -140,7 +162,7 @@ def test_policy(
 @parser.wrap()
 def train(cfg: TrainPipelineConfig):
     cfg.validate()
-    cfg.target_keywords=["q_proj","k_proj","v_proj"]
+    cfg.target_keywords=["linear", "mlp", "proj"]
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -182,7 +204,17 @@ def train(cfg: TrainPipelineConfig):
     )
 
     # Adapter tuning options -------------------------------------------------
-    if getattr(cfg, "use_qlora", False):
+    if getattr(cfg, "train_linear_only", False):
+        policy.unfreeze_linear_layers()
+        policy = policy.to(device=device)
+        logging.info("Unfreezed Linear only")
+
+    elif getattr(cfg, "use_lin_prob", False):
+        policy.unfreeze_action_out_proj()
+        policy = policy.to(device=device)
+        logging.info("Unfreezed action output projection")
+
+    elif getattr(cfg, "use_qlora", False):
         qlora_cfg_obj = InjectQLoRAConfig(**(cfg.qlora_cfg or {})) if hasattr(cfg, "qlora_cfg") else InjectQLoRAConfig()
         policy, _ = inject_qlora(policy, qlora_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
@@ -190,7 +222,7 @@ def train(cfg: TrainPipelineConfig):
         logging.info("Injected QLoRA modules")
 
     elif getattr(cfg, "use_lora", False):
-        # Standard LoRA (rank=16 by default)
+        # Standard LoRA (rank=8 by default)
         lora_cfg_obj = InjectLoRAConfig(**(cfg.lora_cfg or {})) if hasattr(cfg, "lora_cfg") else InjectLoRAConfig()
         policy, _ = inject_lora(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
@@ -213,9 +245,12 @@ def train(cfg: TrainPipelineConfig):
         freeze_non_adapters(policy)
         logging.info("Injected LoRA-MoE modules")
 
+    else:
+        logging.info("Using Vanilla Pi0")
+
     if cfg.use_ddp:
         if dist.is_initialized() and dist.is_available():
-            policy = DistributedDataParallel(
+            policy = DDP(
                 policy,
                 device_ids=[local_rank],
                 output_device=device,
@@ -271,6 +306,12 @@ def train(cfg: TrainPipelineConfig):
         "lr": AverageMeter("lr", ":0.1e"),
         "update_s": AverageMeter("updt_s", ":.3f"),
         "dataloading_s": AverageMeter("data_s", ":.3f"),
+        "vision_param_norm": AverageMeter("v_pn", ":0.1e"),
+        "vision_grad_norm": AverageMeter("v_gn", ":0.1e"),
+        "lang_param_norm": AverageMeter("l_pn", ":0.1e"),
+        "lang_grad_norm": AverageMeter("l_gn", ":0.1e"),
+        "action_param_norm": AverageMeter("a_pn", ":0.1e"),
+        "action_grad_norm": AverageMeter("a_gn", ":0.1e"),
     }
 
     test_metrics = {
