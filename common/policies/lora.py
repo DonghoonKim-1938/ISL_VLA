@@ -155,6 +155,13 @@ def inject_lora(
     cfg = cfg or LoRAConfig()
     wrapped: List[str] = []
 
+    # Special-case keyword to adapt every linear layer regardless of name
+    if target_keywords and (
+        (isinstance(target_keywords, (list, tuple, set)) and "all-linear" in target_keywords)
+        or (isinstance(target_keywords, str) and target_keywords == "all-linear")
+    ):
+        target_keywords = None
+
     for name, module in model.named_modules():
         if not isinstance(module, nn.Linear):
             continue
