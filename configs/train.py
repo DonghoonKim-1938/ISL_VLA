@@ -66,6 +66,8 @@ class TrainPipelineConfig(HubMixin):
     eval: EvalConfig = field(default_factory=EvalConfig)
     wandb: WandBConfig = field(default_factory=WandBConfig)
 
+    train_linear_only: bool | None = False
+    use_lin_prob: bool | None = False
     use_quantization: bool | None = False
     use_qlora: bool | None = False
     use_lora: bool | None = False
