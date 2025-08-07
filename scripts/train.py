@@ -162,7 +162,6 @@ def test_policy(
 @parser.wrap()
 def train(cfg: TrainPipelineConfig):
     cfg.validate()
-    cfg.target_keywords=["linear", "mlp", "proj"]
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -247,14 +246,6 @@ def train(cfg: TrainPipelineConfig):
 
     else:
         logging.info("Using Vanilla Pi0")
-
-    # Linear-only tuning: freeze all except linear layers
-    if cfg.train_linear_only:
-        if hasattr(policy_m, "model") and hasattr(policy_m.model, "unfreeze_linear_layers"):
-            policy_m.model.unfreeze_linear_layers()
-            logging.info("Enabled linear-only tuning")
-        else:
-            logging.warning("train_linear_only=True but model doesn't support unfreeze_linear_layers")
 
     if cfg.use_ddp:
         if dist.is_initialized() and dist.is_available():
