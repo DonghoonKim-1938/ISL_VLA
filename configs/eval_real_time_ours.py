@@ -41,17 +41,22 @@ class EvalRealTimeOursPipelineConfig:
 
     # Adapter configs
     adapter_path: Path | None = None
-    qlora_cfg: QLoRAConfig | None = None
-    lora_cfg: LoraConfig | None = None
-    pt_cfg: PrefixTuningConfig | None = None
-    lora_moe_cfg: LoRAMoEConfig | None = None
 
     # Adapter options
     use_qlora: bool | None = False
     use_lora: bool | None = False
     use_prefix_tuning: bool | None = False
     use_lora_moe: bool | None = False
+
+    # Adapter injection filtering: only layers whose names contain any of these keywords will be wrapped.
+    # If None or empty, all matching layers are wrapped.
     target_keywords: list[str] | None = None
+
+    # Adapter specific hyper-parameters (overrides defaults).
+    qlora_cfg: dict[str, Any] | None = None
+    lora_cfg: dict[str, Any] | None = None
+    prefix_tuning_cfg: dict[str, Any] | None = None
+    lora_moe_cfg: dict[str, Any] | None = None
 
 
     def __post_init__(self):

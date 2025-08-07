@@ -47,11 +47,11 @@ from common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from common.utils.adapter_utils import load_adapters
 
 
-def create_batch(piper, exo_rs_cam, wrist_rs_cam, use_devices, task, use_end_pose: bool = True):
+def create_batch(piper, table_rs_cam, wrist_rs_cam, use_devices, task, use_end_pose: bool = True):
     if use_devices:
         return {
             'observation.state': read_end_pose_msg(piper) if use_end_pose else read_joint_msg(piper),
-            'observation.images.table': exo_rs_cam.image_for_inference(),
+            'observation.images.table': table_rs_cam.image_for_inference(),
             'observation.images.wrist': wrist_rs_cam.image_for_inference(),
             'task': [task],
         }
@@ -86,7 +86,8 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
         listener, event = None, None
 
     logging.info(pformat(cfg.to_dict()))
-    cfg.target_keywords = ['q_proj', 'k_proj', 'v_proj']
+    #cfg.target_keywords = ['q_proj', 'k_proj', 'v_proj']
+    cfg.target_keywords =["linear", "mlp", "proj"]
     cfg.task = 'open the pot'
 
     device = get_safe_torch_device(cfg.policy.device, log=True)
@@ -203,7 +204,7 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
 
         # infer data
         action_pred = policy.select_action(batch).squeeze()
-        if len(policy._action_queue) < 0:
+        if len(policy._action_queue) < 40:
             policy.reset()
         logged_time = policy.logged_time
         t_action_pred = log_time()

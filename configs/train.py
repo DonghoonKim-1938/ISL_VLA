@@ -80,7 +80,7 @@ class TrainPipelineConfig(HubMixin):
     target_keywords: list[str] | None = None
 
     # Adapter specific hyper-parameters (overrides defaults).
-
+    qlora_cfg: dict[str, Any] | None = None
     lora_cfg: dict[str, Any] | None = None
     prefix_tuning_cfg: dict[str, Any] | None = None
     lora_moe_cfg: dict[str, Any] | None = None
