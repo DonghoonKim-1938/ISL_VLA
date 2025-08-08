@@ -1,4 +1,4 @@
-DEVICES=0,1,2,8
+DEVICES=0,1,2,3,4
 TORCH_DISTRIBUTED_BUCKET_CAP_MB=10
 export PYTHONPATH=$(pwd)
 
@@ -8,7 +8,7 @@ DATA_ROOT_DIR="piper_open_the_pot"
 CUDA_VISIBLE_DEVICES=${DEVICES} \
   torchrun \
     --master-port=29300 \
-    --nproc_per_node=4 \
+    --nproc_per_node=5 \
     scripts/train.py \
     --policy.path=/ckpt/pi0 \
     --use_ddp=true \

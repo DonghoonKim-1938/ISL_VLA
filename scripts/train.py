@@ -272,6 +272,7 @@ def train(cfg: TrainPipelineConfig):
 
     num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     num_total_params = sum(p.numel() for p in policy.parameters())
+    pct_trainable_params = 100.0 * (num_learnable_params / num_total_params) if num_total_params > 0 else 0.0
 
     if not cfg.use_ddp or (cfg.use_ddp and dist.get_rank() == 0):
         logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
@@ -280,6 +281,17 @@ def train(cfg: TrainPipelineConfig):
         logging.info(f"{train_dataset.num_episodes=}")
         logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
+        logging.info(f"pct_trainable_params={pct_trainable_params:.2f}%")
+        if wandb_logger:
+            wandb_logger.log_dict(
+                {
+                    "num_total_params": int(num_total_params),
+                    "num_trainable_params": int(num_learnable_params),
+                    "pct_trainable_params": float(pct_trainable_params),
+                },
+                step=step,
+                mode="train",
+            )
 
     # create dataloader for offline training
     train_dataloader = make_dataloader(cfg, train_dataset, device)
