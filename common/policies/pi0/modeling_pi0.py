@@ -305,20 +305,20 @@ class PI0Policy(PreTrainedPolicy):
         vision_param_norm_sq = 0.0
         vision_grad_norm_sq = 0.0
         for m in vision_modules:
-            vision_param_norm_sq += compute_param_norm(m, only_trainable=False) ** 2
-            vision_grad_norm_sq += compute_grad_norm(m, only_trainable=False) ** 2
+            vision_param_norm_sq += compute_param_norm(m, only_trainable=True) ** 2
+            vision_grad_norm_sq += compute_grad_norm(m, only_trainable=True) ** 2
 
         lang_param_norm_sq = 0.0
         lang_grad_norm_sq = 0.0
         for m in lang_modules:
-            lang_param_norm_sq += compute_param_norm(m, only_trainable=False) ** 2
-            lang_grad_norm_sq += compute_grad_norm(m, only_trainable=False) ** 2
+            lang_param_norm_sq += compute_param_norm(m, only_trainable=True) ** 2
+            lang_grad_norm_sq += compute_grad_norm(m, only_trainable=True) ** 2
 
         action_param_norm_sq = 0.0
         action_grad_norm_sq = 0.0
         for m in action_modules:
-            action_param_norm_sq += compute_param_norm(m, only_trainable=False) ** 2
-            action_grad_norm_sq += compute_grad_norm(m, only_trainable=False) ** 2
+            action_param_norm_sq += compute_param_norm(m, only_trainable=True) ** 2
+            action_grad_norm_sq += compute_grad_norm(m, only_trainable=True) ** 2
 
         metrics = {
             "vision_param_norm": vision_param_norm_sq ** 0.5,
