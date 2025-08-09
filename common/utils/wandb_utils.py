@@ -113,12 +113,60 @@ class WandBLogger:
         if mode not in {"train", "eval"}:
             raise ValueError(mode)
 
+        processed: dict[str, int | float | str] = {}
         for k, v in d.items():
-            if not isinstance(v, (int, float, str)):
-                logging.warning(
-                    f'WandB logging of key "{k}" was ignored as its type is not handled by this wrapper.'
-                )
+            # Fast path for scalars/strings
+            if isinstance(v, (int, float, str)):
+                processed[k] = v
                 continue
+
+            # Try to handle tensors/arrays/lists by logging summary stats
+            arr = None
+            try:
+                import torch  # type: ignore
+                if isinstance(v, torch.Tensor):
+                    if v.numel() == 1:
+                        processed[k] = v.item()
+                        continue
+                    arr = v.detach().float().cpu().numpy()
+            except Exception:
+                pass
+
+            if arr is None:
+                try:
+                    import numpy as np  # type: ignore
+                    if isinstance(v, np.ndarray):
+                        arr = v
+                except Exception:
+                    pass
+
+            if arr is None and isinstance(v, (list, tuple)) and len(v) > 0 and all(
+                isinstance(x, (int, float)) for x in v
+            ):
+                try:
+                    import numpy as np  # type: ignore
+                    arr = np.asarray(v)
+                except Exception:
+                    arr = None
+
+            if arr is not None:
+                try:
+                    import numpy as np  # type: ignore
+                    processed[f"{k}_mean"] = float(np.mean(arr))
+                    processed[f"{k}_std"] = float(np.std(arr))
+                    processed[f"{k}_min"] = float(np.min(arr))
+                    processed[f"{k}_max"] = float(np.max(arr))
+                except Exception:
+                    logging.debug(
+                        f'WandB logging of key "{k}" failed during stats computation.'
+                    )
+                continue
+
+            logging.debug(
+                f'WandB logging of key "{k}" was ignored as its type is not handled by this wrapper.'
+            )
+
+        for k, v in processed.items():
             self._wandb.log({f"{mode}/{k}": v}, step=step)
 
     def log_video(self, video_path: str, step: int, mode: str = "train"):
