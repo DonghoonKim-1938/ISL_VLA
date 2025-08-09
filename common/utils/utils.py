@@ -353,4 +353,4 @@ def init_keyboard_listener():
     return listener, event
 
 def is_ddp_master(use_ddp: bool, rank: int):
-    return (not use_ddp) or (use_ddp and (rank != 0))
+    return (not use_ddp) or (use_ddp and (rank == 0))

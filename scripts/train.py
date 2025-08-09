@@ -189,8 +189,6 @@ def train(cfg: TrainPipelineConfig):
 
     if cfg.wandb.enable and cfg.wandb.project:
         if is_ddp_master(cfg.use_ddp, local_rank):
-            pass
-        else:
             wandb_logger = WandBLogger(cfg)
     else:
         wandb_logger = None
@@ -286,7 +284,7 @@ def train(cfg: TrainPipelineConfig):
 
     num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     num_total_params = sum(p.numel() for p in policy.parameters())
-    pct_trainable_params = 100.0 * (num_learnable_params / num_total_params) if num_total_params > 0 else 0.0
+    learnable_params_proportion = 100.0 * (num_learnable_params / num_total_params) if num_total_params > 0 else 0.0
 
     if is_ddp_master(cfg.use_ddp, local_rank):
         logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
@@ -295,13 +293,13 @@ def train(cfg: TrainPipelineConfig):
         logging.info(f"{train_dataset.num_episodes=}")
         logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
-        logging.info(f"pct_trainable_params={pct_trainable_params:.2f}%")
+        logging.info(f"learnable_param_proportion={learnable_params_proportion:.2f}%")
         if wandb_logger:
             wandb_logger.log_dict(
                 {
                     "num_total_params": int(num_total_params),
                     "num_trainable_params": int(num_learnable_params),
-                    "pct_trainable_params": float(pct_trainable_params),
+                    "learnable_params_proportion": float(learnable_params_proportion),
                 },
                 step=step,
                 mode="train",
