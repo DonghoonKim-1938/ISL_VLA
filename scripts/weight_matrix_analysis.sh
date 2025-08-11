@@ -11,8 +11,15 @@
 #   DEVICE  – torch device string (default: cuda:0 if available else cpu)
 # -------------------------------------------------------------
 
-PRETRAINED=/ckpt/pi0
-FINETUNED=/result/pi0_fullFT_multitask/checkpoints/030000
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+  echo "[ERROR] Expected 2 arguments: PRETRAINED_PATH FINETUNED_PATH" >&2
+  exit 1
+fi
+
+PRETRAINED=$1
+FINETUNED=$2
 
 # Choose default device
 if [[ -z "${DEVICE:-}" ]]; then
@@ -29,4 +36,4 @@ python scripts/weight_matrix_analysis.py \
   --pretrained "$PRETRAINED" \
   --finetuned  "$FINETUNED" \
   --device "$DEVICE" \
-  --plot 
+  --plot

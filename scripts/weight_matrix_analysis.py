@@ -32,9 +32,19 @@ from safetensors import safe_open
 from safetensors.torch import load_file as load_safetensor
 
 
-def load_weights(path: str | Path) -> Dict[str, torch.Tensor]:
-    """Load tensors from a safetensors file into CPU Torch tensors."""
-    return load_safetensor(str(path), device="cpu")
+def load_weights(path: str | Path, device: str = "cpu") -> Dict[str, torch.Tensor]:
+    """Load tensors from a safetensors file into Torch tensors on the selected device."""
+    path = Path(path)
+    if path.is_dir():
+        # Automatically pick first *.safetensors file inside the directory
+        candidates = sorted(path.glob("*.safetensors"))
+        if not candidates:
+            raise FileNotFoundError(f"{path} 는 디렉터리이며 .safetensors 파일을 찾을 수 없습니다.")
+        path = candidates[0]
+        print(f"→ {path.name} 파일을 사용합니다.")
+    if not path.is_file():
+        raise FileNotFoundError(f"{path} 파일이 존재하지 않습니다.")
+    return load_safetensor(str(path), device=device)
 
 
 def filter_linear_weights(tensors: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -64,8 +74,8 @@ def main():
     args = parser.parse_args()
 
     print("Loading tensors …")
-    pretrained_tensors = load_weights(args.pretrained)
-    finetuned_tensors = load_weights(args.finetuned)
+    pretrained_tensors = load_weights(args.pretrained, device=args.device)
+    finetuned_tensors = load_weights(args.finetuned, device=args.device)
 
     pt_linear = filter_linear_weights(pretrained_tensors)
     ft_linear = filter_linear_weights(finetuned_tensors)
