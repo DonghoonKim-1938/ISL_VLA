@@ -18,8 +18,8 @@ if [[ $# -ne 2 ]]; then
   exit 1
 fi
 
-PRETRAINED=$1
-FINETUNED=$2
+PRETRAINED=/ckpt/pi0
+FINETUNED=/result/pi0_fullFT_multitask/checkpoints/030000
 
 # Choose default device
 if [[ -z "${DEVICE:-}" ]]; then
