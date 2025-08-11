@@ -207,6 +207,7 @@ def train(cfg: TrainPipelineConfig):
     )
 
     # Adapter tuning options -------------------------------------------------
+    use_adapter = any([getattr(cfg, "use_qlora", False), getattr(cfg, "use_lora", False), getattr(cfg, "use_prefix_tuning", False), getattr(cfg, "use_lora_moe", False)])
     if getattr(cfg, "train_linear_only", False):
         policy.unfreeze_linear_layers()
         policy = policy.to(device=device)
@@ -404,7 +405,7 @@ def train(cfg: TrainPipelineConfig):
                 logging.info(f"Checkpoint policy after step {step}")
                 checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
 
-                if any([getattr(cfg, "use_lora", False), getattr(cfg, "use_prefix_tuning", False), getattr(cfg, "use_lora_moe", False)]):
+                if use_adapter:
                     # Save only adapter weights + training state to keep checkpoint light
                     pretrained_dir = checkpoint_dir / "pretrained_model"
                     cfg.save_pretrained(pretrained_dir)
