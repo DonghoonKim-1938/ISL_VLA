@@ -66,21 +66,20 @@ class TrainPipelineConfig(HubMixin):
     eval: EvalConfig = field(default_factory=EvalConfig)
     wandb: WandBConfig = field(default_factory=WandBConfig)
 
-    train_linear_only: bool | None = False
-    use_lin_prob: bool | None = False
     use_quantization: bool | None = False
     use_qlora: bool | None = False
     use_lora: bool | None = False
     use_prefix_tuning: bool | None = False
     use_lora_moe: bool | None = False
-    use_ddp: bool | None = False
+    # 분산 학습 모드: 'ddp', 'fsdp', 또는 'none'
+    dist_mode: str | None = "none"
 
     # Adapter injection filtering: only layers whose names contain any of these keywords will be wrapped.
     # If None or empty, all matching layers are wrapped.
     target_keywords: list[str] | None = None
 
     # Adapter specific hyper-parameters (overrides defaults).
-    qlora_cfg: dict[str, Any] | None = None
+
     lora_cfg: dict[str, Any] | None = None
     prefix_tuning_cfg: dict[str, Any] | None = None
     lora_moe_cfg: dict[str, Any] | None = None
@@ -136,6 +135,11 @@ class TrainPipelineConfig(HubMixin):
         elif self.use_policy_training_preset and not self.resume:
             self.optimizer = self.policy.get_optimizer_preset()
             self.scheduler = self.policy.get_scheduler_preset()
+
+        # dist_mode 유효성 검사
+        valid_modes = ("ddp", "fsdp", "none", None)
+        if self.dist_mode not in valid_modes:
+            raise ValueError(f"dist_mode must be one of {valid_modes}, got {self.dist_mode}")
 
     @classmethod
     def __get_path_fields__(cls) -> list[str]:

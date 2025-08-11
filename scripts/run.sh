@@ -12,7 +12,7 @@ CUDA_VISIBLE_DEVICES=${DEVICES} \
     --nproc_per_node=7 \
     scripts/train.py \
     --policy.path=/ckpt/pi0 \
-    --use_ddp=true \
+    --dist_mode=ddp \
     --lora_cfg='{"r":32,"alpha":64}' \
     --target_keywords='["all-linear"]' \
     --train_dataset.repo_id="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
