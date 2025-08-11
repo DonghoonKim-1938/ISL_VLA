@@ -11,13 +11,6 @@
 #   DEVICE  – torch device string (default: cuda:0 if available else cpu)
 # -------------------------------------------------------------
 
-set -euo pipefail
-
-if [[ $# -ne 2 ]]; then
-  echo "[ERROR] Expected 2 arguments: PRETRAINED_PATH FINETUNED_PATH" >&2
-  exit 1
-fi
-
 PRETRAINED=/ckpt/pi0
 FINETUNED=/result/pi0_fullFT_multitask/checkpoints/030000
 
