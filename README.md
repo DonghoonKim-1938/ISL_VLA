@@ -4,26 +4,25 @@ This repository provides a comprehensive framework for developing and evaluating
 
 ## Features
 
-- **State-of-the-Art Policies:**
+- **Implemented Policies:**
   - Action-Chunking Transformer (ACT)
   - Diffusion Policy
-  - Pi0
-  - Pi0-Fast
-  - TDMPC
-  - VQ-BeT
+  - Pi0 / Pi0-Fast
+  - SmolVLA (tiny VLM-based policy)
+  - TD-MPC (Model-Predictive Control)
+  - VQ-BeT (Vector-Quantised Behaviour Transformer)
+
+- **Parameter-Efficient Fine-Tuning:** Built-in support for LoRA, QLoRA, Prefix-Tuning, and LoRA-MoE variants to adapt large policies with minimal compute.
 
 - **Supported Robots:**
-  - LeKiwi
-  - Generic Manipulators
+  - LeKiwi research platform
+  - Generic 6-DoF Manipulators
   - Mobile Manipulators
-  - Stretch
+  - Stretch (Hello Robot)
 
-- **Modular and Extensible:** The framework is designed to be easily extended with new policies, robots, and environments.
+- **Dataset & Tools:** End-to-end utilities for recording, converting, splitting, and pushing datasets to the Hugging Face Hub—including image/video transforms and replay buffers.
 
-- **Comprehensive Tooling:** Includes scripts for:
-  - Training and evaluation
-  - Real-time control and data recording
-  - Dataset management and conversion
+- **Modular & Extensible:** Each component (policy, robot driver, environment, optimiser) follows a factory pattern, making it straightforward to plug-in new modules.
 
 ## Installation
 
@@ -33,9 +32,28 @@ This repository provides a comprehensive framework for developing and evaluating
    cd ISL_VLA
    ```
 
-2. **Install dependencies:**
-   It is recommended to use a virtual environment (e.g., conda or venv).
+2. **Install dependencies (recommended: use a dedicated conda environment):**
+
+   If you have Anaconda/Miniconda installed, you can create an isolated Python 3.11 environment and install all dependencies as follows:
+
    ```bash
+   # create and activate a new environment called isl-vla (feel free to change the name)
+   conda create -n isl-vla python=3.11 -y
+   conda activate isl-vla
+
+   # upgrade pip and install the requirements
+   python -m pip install -U pip
+   pip install -r requirements.txt
+
+   # some video processing libraries are easier to install via conda-forge
+   conda install -c conda-forge av ffmpeg -y
+   ```
+
+   If you prefer plain `pip` + `venv`, simply run:
+
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
    pip install -r requirements.txt
    ```
 
