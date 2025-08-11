@@ -32,7 +32,7 @@ fi
 
 echo "Running SVD analysis on device: $DEVICE"
 
-CUDA_VISIBLE_DEVICES=8
+CUDA_VISIBLE_DEVICES=7,8 \
 python scripts/weight_matrix_analysis.py \
   --pretrained "$PRETRAINED" \
   --finetuned  "$FINETUNED" \
