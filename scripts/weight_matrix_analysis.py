@@ -95,7 +95,7 @@ def main():
         return {thr: [] for thr in THRESHOLDS}
 
     def _cat_dict():
-        return {"layers": [], "labels": [], "pt": _init_thr_dict(), "ft": _init_thr_dict(), "diff": _init_thr_dict()}
+        return {"layers": [], "labels": [], "pt": _init_thr_dict(), "ft": _init_thr_dict(), "diff": _init_thr_dict(), "k99": []}
 
     categories = {
         "vision_tower": _cat_dict(),
@@ -157,6 +157,7 @@ def main():
 
         # Pre-compute per-threshold counts and ratios
         total_svs = len(sv_pt)
+        k99_layer = None
         for thr in THRESHOLDS:
             c_pt = count_until(sv_pt, thr)
             c_ft = count_until(sv_ft, thr)
@@ -167,6 +168,9 @@ def main():
             categories[cat]["pt"][thr].append(r_pt)
             categories[cat]["ft"][thr].append(r_ft)
             categories[cat]["diff"][thr].append(r_diff)
+            if thr == 0.99:
+                categories[cat]["k99"].append(c_diff)
+                k99_layer = c_diff
 
         # Print only 90% ratios in summary for brevity
         thr90 = 0.9
@@ -174,7 +178,7 @@ def main():
         r_pt90 = categories[cat]["pt"][thr90][-1]
         r_ft90 = categories[cat]["ft"][thr90][-1]
         r_diff90 = categories[cat]["diff"][thr90][-1]
-        print(f"[{idx:03d}] {name} (shape: {shape_str})")
+        print(f"[{idx:03d}] {name} (shape: {shape_str}) | k99={k99_layer}")
         print(
             f"  90% SV ratio – pretrained: {r_pt90:.2%}, finetuned: {r_ft90:.2%}, delta: {r_diff90:.2%}"
         )
@@ -211,6 +215,14 @@ def main():
                 out_path = Path(f"svd_{thr_label}p_ratio_{cat}.png")
                 plt.savefig(out_path, dpi=150)
                 print(f"Plot saved to {out_path.resolve()}")
+
+        # ---- Intrinsic rank summary at 99% ----
+        print("\nIntrinsic rank (LoRA lower-bound guide) @ 99% cumulative energy")
+        for cat, data in categories.items():
+            if not data["k99"]:
+                continue
+            total_rank = sum(data["k99"])
+            print(f"  [{cat}] Σk = {total_rank} (layers: {len(data['k99'])}) | per-layer k: {data['k99']}")
 
 
 if __name__ == "__main__":
