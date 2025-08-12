@@ -132,6 +132,12 @@ def main():
         c_ft = count_until_90(sv_ft)
         c_diff = count_until_90(sv_diff)
 
+        # ratio to full singular count
+        total_svs = len(sv_pt)
+        r_pt = c_pt / total_svs
+        r_ft = c_ft / total_svs
+        r_diff = c_diff / total_svs
+
         # classify category
         if "vision_tower" in name:
             cat = "vision_tower"
@@ -144,16 +150,19 @@ def main():
 
         layer_idx = extract_layer_idx(name)
         if layer_idx is None:
-            # Fallback to enumeration index if pattern not found
-            layer_idx = idx
+            # Unknown layer index → group at -1
+            layer_idx = -1
 
         categories[cat]["layers"].append(layer_idx)
-        categories[cat]["pt"].append(c_pt)
-        categories[cat]["ft"].append(c_ft)
-        categories[cat]["diff"].append(c_diff)
+        categories[cat]["pt"].append(r_pt)
+        categories[cat]["ft"].append(r_ft)
+        categories[cat]["diff"].append(r_diff)
 
         print(f"[{idx:03d}] {name} (shape: {shape_str})")
-        print(f"  90% SV count – pretrained: {c_pt}, finetuned: {c_ft}, delta: {c_diff}")
+        print(
+            f"  90% SV count – pretrained: {c_pt} ({r_pt:.2%}), "
+            f"finetuned: {c_ft} ({r_ft:.2%}), delta: {c_diff} ({r_diff:.2%})"
+        )
         print("-" * 60)
 
     if args.plot:
@@ -167,8 +176,9 @@ def main():
             plt.scatter(data["layers"], data["ft"], label="finetuned")
             plt.scatter(data["layers"], data["diff"], label="delta")
             plt.xlabel(f"Layer index ({cat})")
-            plt.ylabel("# SVs to reach 90% energy")
-            plt.title(f"Singular Value 90% energy counts – {cat}")
+            plt.ylabel("90% SV count / full rank")
+            plt.title(f"Singular Value 90% energy ratios – {cat}")
+            plt.xticks([])  # hide x tick labels
             plt.legend()
             plt.tight_layout()
             out_path = Path(f"svd_90p_counts_{cat}.png")
