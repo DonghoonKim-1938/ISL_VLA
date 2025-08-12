@@ -95,6 +95,7 @@ def main():
         pt_w = pt_linear[name].to(device)
         ft_w = ft_linear[name].to(device)
         diff_w = ft_w - pt_w
+        shape_str = f"{pt_w.shape[0]}×{pt_w.shape[1]}"
 
         # full singular values
         sv_pt = torch.linalg.svdvals(pt_w.float()).cpu()
@@ -124,7 +125,7 @@ def main():
         counts_ft.append(c_ft)
         counts_diff.append(c_diff)
 
-        print(f"[{idx:03d}] {name}")
+        print(f"[{idx:03d}] {name} (shape: {shape_str})")
         print(f"  90% SV count – pretrained: {c_pt}, finetuned: {c_ft}, delta: {c_diff}")
         print("-" * 60)
 
