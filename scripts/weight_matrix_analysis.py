@@ -147,7 +147,7 @@ def main():
             """Return smallest k s.t. first k SVs sum ≥ pct * total."""
             if torch.all(s == 0):
                 return 0
-            cs = torch.cumsum(s, dim=0)
+            cs = torch.cumsum(s.pow(2), dim=0)  # use squared singular values for energy
             total = cs[-1]
             if total == 0:
                 return 0
