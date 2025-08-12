@@ -102,9 +102,19 @@ def main():
         sv_diff = torch.linalg.svdvals(diff_w.float()).cpu()
 
         def count_until_90(s: torch.Tensor) -> int:
+            """Return the smallest k such that first k singular values account for ≥90% energy.
+            Robust to zero-valued (all-zero) spectra.
+            """
+            if torch.all(s == 0):
+                # Matrix is all-zero → effective rank 0
+                return 0
             cs = torch.cumsum(s, dim=0)
             total = cs[-1]
-            return int((cs / total >= 0.9).nonzero(as_tuple=True)[0][0].item() + 1)
+            if total == 0:
+                return 0
+            mask = (cs / total) >= 0.9
+            idx = mask.nonzero(as_tuple=False)
+            return int(idx[0].item() + 1) if idx.numel() else len(s)
 
         c_pt = count_until_90(sv_pt)
         c_ft = count_until_90(sv_ft)
