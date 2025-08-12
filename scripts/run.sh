@@ -1,15 +1,15 @@
-DEVICES=0,1,2,3,4,5,6
+DEVICES=0,1
 TORCH_DISTRIBUTED_BUCKET_CAP_MB=10
 export PYTHONPATH=$(pwd)
 export TOKENIZERS_PARALLELISM=false
 
 BASELINE="pi0"
-DATA_ROOT_DIR="piper_multitask"
+DATA_ROOT_DIR="piper_pickplace"
 
 CUDA_VISIBLE_DEVICES=${DEVICES} \
   torchrun \
     --master-port=29300 \
-    --nproc_per_node=7 \
+    --nproc_per_node=2 \
     scripts/train.py \
     --policy.path=/ckpt/pi0 \
     --dist_mode=ddp \
@@ -22,8 +22,9 @@ CUDA_VISIBLE_DEVICES=${DEVICES} \
     --wandb.project=ISL_VLA \
     --wandb.enable=true \
     --wandb.disable_artifact=true \
-    --output_dir=/result/${BASELINE}_fullFT_multitask \
-    --job_name=${BASELINE}_fullFT_multitask \
+    --wandb.run_id=${BASELINE}_fullFT_pickplace \
+    --output_dir=/result/${BASELINE}_fullFT_pickplace \
+    --job_name=${BASELINE}_fullFT_pickplace \
     --batch_size=6 \
     --num_workers=16 \
     --log_freq=10 \

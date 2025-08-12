@@ -5,6 +5,7 @@ import datetime
 from contextlib import nullcontext
 from pprint import pformat
 from typing import Any
+import bitsandbytes as bnb
 
 # LoRA / Prefix / LoRA-MoE injection utilities
 from common.policies.qlora import inject_qlora, QLoRAConfig as InjectQLoRAConfig
@@ -24,6 +25,7 @@ from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from common.policies.lora import LoRALinear
 from common.policies.lora_moe import MoELoRALinear
 from common.policies.prefix_tuning import _PrefixEncoder
+from common.policies.qlora import QLoRALinear
 from common.policies.pi0.modeling_pi0 import PI0FlowMatching
 
 from torch.optim import Optimizer
@@ -176,7 +178,7 @@ def train(cfg: TrainPipelineConfig):
     # ---------------------------------------------------------
     # distributed mode flags
     # ---------------------------------------------------------
-    dist_mode = getattr(cfg, "dist_mode", "ddp")  # 'ddp', 'fsdp', 'none'
+    dist_mode = getattr(cfg, "dist_mode", "none")  # 'ddp', 'fsdp', 'none'
     use_ddp = dist_mode == "ddp"
     use_fsdp = dist_mode == "fsdp"
     is_distributed = use_ddp or use_fsdp
@@ -278,6 +280,24 @@ def train(cfg: TrainPipelineConfig):
         if is_ddp_master(is_distributed, local_rank):
             logging.info("Using Vanilla Pi0")
 
+    # Utilities to normalize dtypes across the model prior to FSDP wrapping
+    def _log_param_dtype_counts(module: torch.nn.Module, prefix: str = ""):
+        counts: dict[str, int] = {}
+        for p in module.parameters(recurse=True):
+            if isinstance(p, torch.Tensor):
+                key = str(p.dtype)
+                counts[key] = counts.get(key, 0) + 1
+        logging.info(f"{prefix} Parameter dtype counts: {counts}")
+
+    def _force_cast_all_float_parameters(module: torch.nn.Module, target_dtype: torch.dtype):
+        for _, param in module.named_parameters(recurse=True):
+            if isinstance(param.data, torch.Tensor) and param.data.is_floating_point() and param.data.dtype != target_dtype:
+                param.data = param.data.to(target_dtype)
+
+    _log_param_dtype_counts(policy, prefix="Before cast →")
+    _force_cast_all_float_parameters(policy, target_dtype=torch.bfloat16)
+    _log_param_dtype_counts(policy, prefix="After cast  →")
+
     if dist_mode == "ddp":
         # Wrap with DDP
         if dist.is_initialized() and dist.is_available():
@@ -291,24 +311,23 @@ def train(cfg: TrainPipelineConfig):
             policy_m = policy.module
         logging.info(f"Wrapped DDP module for local rank {local_rank}")
     elif dist_mode == "fsdp":
-        # Create custom auto-wrap for Pi0 + adapters
-        def _policy_adapter_wrap_policy(module, recurse, nonwrapped_params):
-            if isinstance(module, (LoRALinear, MoELoRALinear, _PrefixEncoder)):
-                return True
-            return transformer_auto_wrap_policy(module, recurse, nonwrapped_params)
-
         mp_policy = MixedPrecision(
             param_dtype=torch.bfloat16,
             reduce_dtype=torch.float32,
             buffer_dtype=torch.bfloat16,
         )
 
+        # Move to device without changing buffer dtypes
+        policy = policy.to(device=device)
+        # Ensure all trainable parameters are bfloat16
+        _force_cast_all_float_parameters(policy, target_dtype=torch.bfloat16)
+
+        # Robust construction across torch versions: prefer use_orig_params, else fall back
         policy = FSDP(
-            policy,
-            device_id=device,
-            auto_wrap_policy=_policy_adapter_wrap_policy,
-            mixed_precision=mp_policy,
-            find_unused_parameters=True,
+                policy,
+                device_id=device,
+                mixed_precision=mp_policy,
+                use_orig_params=True,
         )
         policy_m = policy  # FSDP exposes params directly
         logging.info("Wrapped FSDP module")
@@ -425,6 +444,8 @@ def train(cfg: TrainPipelineConfig):
             use_amp=cfg.policy.use_amp,
             moe_aux_cfg=moe_aux_cfg,
         )
+        if is_distributed:
+            dist.barrier()
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
@@ -441,6 +462,8 @@ def train(cfg: TrainPipelineConfig):
             else:
                 logging.info(train_tracker)
                 log_wandb_tracker(wandb_logger, train_tracker, output_dict, step)
+        if is_distributed:
+            dist.barrier()
 
         if cfg.save_checkpoint and is_saving_step:
             if is_ddp_master(is_distributed, local_rank):
@@ -455,11 +478,16 @@ def train(cfg: TrainPipelineConfig):
                     save_training_state(checkpoint_dir, step, optimizer, lr_scheduler)
                 else:
                     # Full model checkpoint
-                    save_checkpoint(checkpoint_dir, step, cfg, policy_m, optimizer, lr_scheduler)
+                    if isinstance(policy, FSDP):
+                        save_checkpoint(checkpoint_dir, step, cfg, policy, optimizer, lr_scheduler, is_sharded=True)
+                    else:
+                        save_checkpoint(checkpoint_dir, step, cfg, policy_m, optimizer, lr_scheduler)
 
                 update_last_checkpoint(checkpoint_dir)
                 if wandb_logger:
                     wandb_logger.log_policy(checkpoint_dir)
+        if is_distributed:
+            dist.barrier()
 
         if is_test_step:
             test_batch = next(test_dl_iter)
@@ -475,6 +503,8 @@ def train(cfg: TrainPipelineConfig):
             if is_ddp_master(is_distributed, local_rank):
                 logging.info(test_tracker)
                 log_wandb_tracker(wandb_logger, test_tracker, output_dict, step, mode='eval')
+        if is_distributed:
+            dist.barrier()
 
     logging.info("End of training")
     if is_distributed and dist.is_initialized():

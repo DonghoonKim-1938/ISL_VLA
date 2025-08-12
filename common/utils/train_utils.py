@@ -20,6 +20,7 @@ import torch
 from termcolor import colored
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
+from torch.distributed.fsdp import StateDictType, FullyShardedDataParallel as FSDP
 
 from common.constants import (
     CHECKPOINTS_DIR,
@@ -34,6 +35,8 @@ from common.optim.schedulers import load_scheduler_state, save_scheduler_state
 from common.policies.pretrained import PreTrainedPolicy
 from common.utils.random_utils import load_rng_state, save_rng_state
 from configs.train import TrainPipelineConfig
+
+from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 
 
 def log_output_dir(out_dir):
@@ -75,6 +78,7 @@ def save_checkpoint(
     policy: PreTrainedPolicy,
     optimizer: Optimizer,
     scheduler: LRScheduler | None = None,
+    is_sharded: bool = False,
 ) -> None:
     """This function creates the following directory structure:
 
@@ -98,9 +102,27 @@ def save_checkpoint(
         scheduler (LRScheduler | None, optional): The scheduler to save the state from. Defaults to None.
     """
     pretrained_dir = checkpoint_dir / PRETRAINED_MODEL_DIR
-    policy.save_pretrained(pretrained_dir)
+    save_pretrained_policy(policy, pretrained_dir, is_sharded=is_sharded)
     cfg.save_pretrained(pretrained_dir)
     save_training_state(checkpoint_dir, step, optimizer, scheduler)
+
+
+def save_pretrained_policy(policy: PreTrainedPolicy, pretrained_dir: Path, is_sharded: bool = False) -> None:
+    if is_sharded:
+        _save_sharded_policy(policy, pretrained_dir)
+    else:
+        policy.save_pretrained(pretrained_dir)
+
+
+def _save_sharded_policy(policy: PreTrainedPolicy, save_directory: Path) -> None:
+    save_directory = Path(save_directory)
+    save_directory.mkdir(parents=True, exist_ok=True)
+
+    policy.config._save_pretrained(save_directory)
+
+    with FSDP.state_dict_type(policy, StateDictType.FULL_STATE_DICT):
+        full_state_dict = policy.state_dict()
+    torch.save(full_state_dict, str(save_directory / "model.pt"))
 
 
 def save_training_state(

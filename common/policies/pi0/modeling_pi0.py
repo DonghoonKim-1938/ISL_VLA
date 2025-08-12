@@ -593,6 +593,8 @@ class PI0FlowMatching(nn.Module):
 
         self.set_requires_grad()
 
+        self.sample_dtype = self.state_proj.weight.dtype
+
     def set_requires_grad(self):
         for params in self.state_proj.parameters():
             params.requires_grad = self.config.train_state_proj
@@ -602,7 +604,7 @@ class PI0FlowMatching(nn.Module):
             mean=0.0,
             std=1.0,
             size=shape,
-            dtype=torch.float32,
+            dtype=self.state_proj.weight.dtype,
             device=device,
         )
         return noise
@@ -610,7 +612,7 @@ class PI0FlowMatching(nn.Module):
     def sample_time(self, bsize, device):
         time_beta = sample_beta(1.5, 1.0, bsize, device)
         time = time_beta * 0.999 + 0.001
-        return time.to(dtype=torch.float32, device=device)
+        return time.to(dtype=self.state_proj.weight.dtype, device=device)
 
     def get_input_embeddings(self):
         return self.paligemma_with_expert.get_input_embeddings()
@@ -760,7 +762,7 @@ class PI0FlowMatching(nn.Module):
         )
         suffix_out = suffix_out[:, -self.config.n_action_steps :]
         # Original openpi code, upcast attention output
-        suffix_out = suffix_out.to(dtype=torch.float32)
+        suffix_out = suffix_out.to(dtype=self.state_proj.weight.dtype)
         v_t = self.action_out_proj(suffix_out)
 
         losses = F.mse_loss(u_t, v_t, reduction="none")
@@ -857,6 +859,6 @@ class PI0FlowMatching(nn.Module):
         )
         suffix_out = outputs_embeds[1]
         suffix_out = suffix_out[:, -self.config.n_action_steps :]
-        suffix_out = suffix_out.to(dtype=torch.float32)
+        suffix_out = suffix_out.to(dtype=self.state_proj.weight.dtype)
         v_t = self.action_out_proj(suffix_out)
         return v_t
