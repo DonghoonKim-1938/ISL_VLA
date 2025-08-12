@@ -87,12 +87,21 @@ def main():
 
     device = torch.device(args.device)
 
-    # Containers per category
+    # -------- Threshold settings --------
+    THRESHOLDS = [0.5, 0.6, 0.7, 0.8, 0.9]
+
+    # Containers per category & threshold
+    def _init_thr_dict():
+        return {thr: [] for thr in THRESHOLDS}
+
+    def _cat_dict():
+        return {"layers": [], "labels": [], "pt": _init_thr_dict(), "ft": _init_thr_dict(), "diff": _init_thr_dict()}
+
     categories = {
-        "vision_tower": {"layers": [], "pt": [], "ft": [], "diff": []},
-        "language_model": {"layers": [], "pt": [], "ft": [], "diff": []},
-        "gemma_expert": {"layers": [], "pt": [], "ft": [], "diff": []},
-        "others": {"layers": [], "pt": [], "ft": [], "diff": []},
+        "vision_tower": _cat_dict(),
+        "language_model": _cat_dict(),
+        "gemma_expert": _cat_dict(),
+        "others": _cat_dict(),
     }
 
     import re
@@ -114,29 +123,30 @@ def main():
         sv_ft = torch.linalg.svdvals(ft_w.float()).cpu()
         sv_diff = torch.linalg.svdvals(diff_w.float()).cpu()
 
-        def count_until_90(s: torch.Tensor) -> int:
-            """Return the smallest k such that first k singular values account for ≥90% energy.
-            Robust to zero-valued (all-zero) spectra.
-            """
+        def count_until(s: torch.Tensor, pct: float) -> int:
+            """Return smallest k s.t. first k SVs sum ≥ pct * total."""
             if torch.all(s == 0):
                 return 0
             cs = torch.cumsum(s, dim=0)
             total = cs[-1]
             if total == 0:
                 return 0
-            mask = (cs / total) >= 0.9
-            idx_arr = mask.nonzero(as_tuple=False)
+            target = pct * total
+            idx_arr = (cs >= target).nonzero(as_tuple=False)
             return int(idx_arr[0].item() + 1) if idx_arr.numel() else len(s)
 
-        c_pt = count_until_90(sv_pt)
-        c_ft = count_until_90(sv_ft)
-        c_diff = count_until_90(sv_diff)
-
-        # ratio to full singular count
+        # Pre-compute per-threshold counts and ratios
         total_svs = len(sv_pt)
-        r_pt = c_pt / total_svs
-        r_ft = c_ft / total_svs
-        r_diff = c_diff / total_svs
+        for thr in THRESHOLDS:
+            c_pt = count_until(sv_pt, thr)
+            c_ft = count_until(sv_ft, thr)
+            c_diff = count_until(sv_diff, thr)
+            r_pt = c_pt / total_svs
+            r_ft = c_ft / total_svs
+            r_diff = c_diff / total_svs
+            categories[cat]["pt"][thr].append(r_pt)
+            categories[cat]["ft"][thr].append(r_ft)
+            categories[cat]["diff"][thr].append(r_diff)
 
         # classify category
         if "vision_tower" in name:
@@ -153,37 +163,54 @@ def main():
             # Unknown layer index → group at -1
             layer_idx = -1
 
+        # store label once
+        comp_label = name.rsplit(".", 1)[0].split(".")[-1]  # e.g., k_proj / fc1
         categories[cat]["layers"].append(layer_idx)
-        categories[cat]["pt"].append(r_pt)
-        categories[cat]["ft"].append(r_ft)
-        categories[cat]["diff"].append(r_diff)
+        categories[cat]["labels"].append(comp_label)
 
+        # Print only 90% ratios in summary for brevity
+        thr90 = 0.9
+        idx90 = THRESHOLDS.index(thr90)
+        r_pt90 = categories[cat]["pt"][thr90][-1]
+        r_ft90 = categories[cat]["ft"][thr90][-1]
+        r_diff90 = categories[cat]["diff"][thr90][-1]
         print(f"[{idx:03d}] {name} (shape: {shape_str})")
         print(
-            f"  90% SV count – pretrained: {c_pt} ({r_pt:.2%}), "
-            f"finetuned: {c_ft} ({r_ft:.2%}), delta: {c_diff} ({r_diff:.2%})"
+            f"  90% SV ratio – pretrained: {r_pt90:.2%}, finetuned: {r_ft90:.2%}, delta: {r_diff90:.2%}"
         )
         print("-" * 60)
 
     if args.plot:
         import matplotlib.pyplot as plt
 
-        for cat, data in categories.items():
-            if not data["layers"]:
-                continue
-            plt.figure(figsize=(10, 6))
-            plt.scatter(data["layers"], data["pt"], label="pretrained")
-            plt.scatter(data["layers"], data["ft"], label="finetuned")
-            plt.scatter(data["layers"], data["diff"], label="delta")
-            plt.xlabel(f"Layer index ({cat})")
-            plt.ylabel("90% SV count / full rank")
-            plt.title(f"Singular Value 90% energy ratios – {cat}")
-            plt.xticks([])  # hide x tick labels
-            plt.legend()
-            plt.tight_layout()
-            out_path = Path(f"svd_90p_counts_{cat}.png")
-            plt.savefig(out_path, dpi=150)
-            print(f"Scatter plot saved to {out_path.resolve()}")
+        for thr in THRESHOLDS:
+            thr_label = int(thr * 100)
+            for cat, data in categories.items():
+                if not data["layers"]:
+                    continue
+                plt.figure(figsize=(10, 6))
+                plt.scatter(data["layers"], data["pt"][thr], label="pretrained")
+                plt.scatter(data["layers"], data["ft"][thr], label="finetuned")
+                plt.scatter(data["layers"], data["diff"][thr], label="delta")
+
+                # annotate component labels
+                for i, lbl in enumerate(data["labels"]):
+                    plt.annotate(lbl, (data["layers"][i], data["pt"][thr][i]), fontsize=7, rotation=45, ha="right")
+
+                plt.xlabel(f"Layer index ({cat})")
+                plt.ylabel(f"{thr_label}% SV / full rank")
+                plt.title(f"{thr_label}% SV ratio – {cat}")
+
+                # show xticks except -1
+                ticks = sorted(set(data["layers"]))
+                labels = [str(t) if t != -1 else "" for t in ticks]
+                plt.xticks(ticks, labels)
+
+                plt.legend()
+                plt.tight_layout()
+                out_path = Path(f"svd_{thr_label}p_ratio_{cat}.png")
+                plt.savefig(out_path, dpi=150)
+                print(f"Plot saved to {out_path.resolve()}")
 
 
 if __name__ == "__main__":
