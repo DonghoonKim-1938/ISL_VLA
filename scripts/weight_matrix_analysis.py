@@ -87,8 +87,20 @@ def main():
 
     device = torch.device(args.device)
 
-    # Store counts for plotting
-    counts_pt, counts_ft, counts_diff = [], [], []
+    # Containers per category
+    categories = {
+        "vision_tower": {"layers": [], "pt": [], "ft": [], "diff": []},
+        "language_model": {"layers": [], "pt": [], "ft": [], "diff": []},
+        "gemma_expert": {"layers": [], "pt": [], "ft": [], "diff": []},
+        "others": {"layers": [], "pt": [], "ft": [], "diff": []},
+    }
+
+    import re
+
+    def extract_layer_idx(tensor_name: str) -> int | None:
+        """Extract the last numeric value after '.layers.' pattern."""
+        matches = re.findall(r"\.layers\.([0-9]+)", tensor_name)
+        return int(matches[-1]) if matches else None
 
     print(f"Found {len(shared_keys)} shared linear layers. Computing SVD + 90% energy counts…")
     for idx, name in enumerate(shared_keys):
@@ -107,23 +119,38 @@ def main():
             Robust to zero-valued (all-zero) spectra.
             """
             if torch.all(s == 0):
-                # Matrix is all-zero → effective rank 0
                 return 0
             cs = torch.cumsum(s, dim=0)
             total = cs[-1]
             if total == 0:
                 return 0
             mask = (cs / total) >= 0.9
-            idx = mask.nonzero(as_tuple=False)
-            return int(idx[0].item() + 1) if idx.numel() else len(s)
+            idx_arr = mask.nonzero(as_tuple=False)
+            return int(idx_arr[0].item() + 1) if idx_arr.numel() else len(s)
 
         c_pt = count_until_90(sv_pt)
         c_ft = count_until_90(sv_ft)
         c_diff = count_until_90(sv_diff)
 
-        counts_pt.append(c_pt)
-        counts_ft.append(c_ft)
-        counts_diff.append(c_diff)
+        # classify category
+        if "vision_tower" in name:
+            cat = "vision_tower"
+        elif "language_model" in name:
+            cat = "language_model"
+        elif "expert" in name or "gemma_expert" in name:
+            cat = "gemma_expert"
+        else:
+            cat = "others"
+
+        layer_idx = extract_layer_idx(name)
+        if layer_idx is None:
+            # Fallback to enumeration index if pattern not found
+            layer_idx = idx
+
+        categories[cat]["layers"].append(layer_idx)
+        categories[cat]["pt"].append(c_pt)
+        categories[cat]["ft"].append(c_ft)
+        categories[cat]["diff"].append(c_diff)
 
         print(f"[{idx:03d}] {name} (shape: {shape_str})")
         print(f"  90% SV count – pretrained: {c_pt}, finetuned: {c_ft}, delta: {c_diff}")
@@ -132,20 +159,21 @@ def main():
     if args.plot:
         import matplotlib.pyplot as plt
 
-        layers = list(range(len(shared_keys)))
-
-        plt.figure(figsize=(10, 6))
-        plt.scatter(layers, counts_pt, label="pretrained")
-        plt.scatter(layers, counts_ft, label="finetuned")
-        plt.scatter(layers, counts_diff, label="delta")
-        plt.xlabel("Layer index (shared linear layers)")
-        plt.ylabel("# SVs to reach 90% energy")
-        plt.title("Singular Value 90% energy counts per layer")
-        plt.legend()
-        plt.tight_layout()
-        out_path = Path("svd_90p_counts.png")
-        plt.savefig(out_path, dpi=150)
-        print(f"Scatter plot saved to {out_path.resolve()}")
+        for cat, data in categories.items():
+            if not data["layers"]:
+                continue
+            plt.figure(figsize=(10, 6))
+            plt.scatter(data["layers"], data["pt"], label="pretrained")
+            plt.scatter(data["layers"], data["ft"], label="finetuned")
+            plt.scatter(data["layers"], data["diff"], label="delta")
+            plt.xlabel(f"Layer index ({cat})")
+            plt.ylabel("# SVs to reach 90% energy")
+            plt.title(f"Singular Value 90% energy counts – {cat}")
+            plt.legend()
+            plt.tight_layout()
+            out_path = Path(f"svd_90p_counts_{cat}.png")
+            plt.savefig(out_path, dpi=150)
+            print(f"Scatter plot saved to {out_path.resolve()}")
 
 
 if __name__ == "__main__":
