@@ -118,6 +118,26 @@ def main():
         diff_w = ft_w - pt_w
         shape_str = f"{pt_w.shape[0]}×{pt_w.shape[1]}"
 
+        # determine category and layer index early
+        if "vision_tower" in name:
+            cat = "vision_tower"
+        elif "language_model" in name:
+            cat = "language_model"
+        elif "expert" in name or "gemma_expert" in name:
+            cat = "gemma_expert"
+        else:
+            cat = "others"
+
+        layer_idx = extract_layer_idx(name)
+        if layer_idx is None:
+            layer_idx = -1
+
+        comp_label = name.rsplit(".", 1)[0].split(".")[-1]
+
+        # ensure layer and label stored once
+        categories[cat]["layers"].append(layer_idx)
+        categories[cat]["labels"].append(comp_label)
+
         # full singular values
         sv_pt = torch.linalg.svdvals(pt_w.float()).cpu()
         sv_ft = torch.linalg.svdvals(ft_w.float()).cpu()
@@ -147,26 +167,6 @@ def main():
             categories[cat]["pt"][thr].append(r_pt)
             categories[cat]["ft"][thr].append(r_ft)
             categories[cat]["diff"][thr].append(r_diff)
-
-        # classify category
-        if "vision_tower" in name:
-            cat = "vision_tower"
-        elif "language_model" in name:
-            cat = "language_model"
-        elif "expert" in name or "gemma_expert" in name:
-            cat = "gemma_expert"
-        else:
-            cat = "others"
-
-        layer_idx = extract_layer_idx(name)
-        if layer_idx is None:
-            # Unknown layer index → group at -1
-            layer_idx = -1
-
-        # store label once
-        comp_label = name.rsplit(".", 1)[0].split(".")[-1]  # e.g., k_proj / fc1
-        categories[cat]["layers"].append(layer_idx)
-        categories[cat]["labels"].append(comp_label)
 
         # Print only 90% ratios in summary for brevity
         thr90 = 0.9
