@@ -88,7 +88,7 @@ def main():
     device = torch.device(args.device)
 
     # -------- Threshold settings --------
-    THRESHOLDS = [0.5, 0.6, 0.7, 0.8, 0.9]
+    THRESHOLDS = [0.5, 0.6, 0.7, 0.8, 0.9, 0.99]
 
     # Containers per category & threshold
     def _init_thr_dict():
