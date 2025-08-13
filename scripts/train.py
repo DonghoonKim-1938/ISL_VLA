@@ -185,7 +185,7 @@ def train(cfg: TrainPipelineConfig):
             device, local_rank = torch.device("cuda"), 0  # single GPU
 
         if not dist.is_initialized():
-            dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=30))
+            dist.init_process_group(backend="gloo", timeout=datetime.timedelta(minutes=30))
         local_rank = dist.get_rank()
         device = torch.device("cuda", local_rank)
         torch.cuda.set_device(device)  # needed!
@@ -405,6 +405,10 @@ def train(cfg: TrainPipelineConfig):
         logging.info("Start offline training on a fixed dataset")
 
     for _ in range(step, cfg.steps):
+        if isinstance(policy, FSDP):
+            gc.collect()
+            torch.cuda.empty_cache()
+
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
 
