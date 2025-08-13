@@ -58,6 +58,7 @@ class TrainPipelineConfig(HubMixin):
     test_freq: int = 1
     log_freq: int = 200
     save_checkpoint: bool = True
+    checkpoint_path: Path | None = None
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
     save_freq: int = 20_000
     use_policy_training_preset: bool = True
@@ -132,7 +133,7 @@ class TrainPipelineConfig(HubMixin):
 
         if not self.use_policy_training_preset and (self.optimizer is None or self.scheduler is None):
             raise ValueError("Optimizer and Scheduler must be set when the policy presets are not used.")
-        elif self.use_policy_training_preset and not self.resume:
+        elif self.use_policy_training_preset:
             self.optimizer = self.policy.get_optimizer_preset()
             self.scheduler = self.policy.get_scheduler_preset()
 

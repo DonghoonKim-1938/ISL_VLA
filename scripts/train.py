@@ -3,6 +3,7 @@ import time
 import os
 import datetime
 from contextlib import nullcontext
+from pathlib import PosixPath
 from pprint import pformat
 from typing import Any
 import bitsandbytes as bnb
@@ -294,10 +295,6 @@ def train(cfg: TrainPipelineConfig):
             if isinstance(param.data, torch.Tensor) and param.data.is_floating_point() and param.data.dtype != target_dtype:
                 param.data = param.data.to(target_dtype)
 
-    _log_param_dtype_counts(policy, prefix="Before cast →")
-    _force_cast_all_float_parameters(policy, target_dtype=torch.bfloat16)
-    _log_param_dtype_counts(policy, prefix="After cast  →")
-
     if dist_mode == "ddp":
         # Wrap with DDP
         if dist.is_initialized() and dist.is_available():
@@ -342,6 +339,8 @@ def train(cfg: TrainPipelineConfig):
     step = 0  # number of policy updates (forward + backward + optim)
 
     if cfg.resume:
+        cfg.checkpoint_path = PosixPath("/result/pi0_fullFT_pickplace/checkpoints/010000")
+        logging.info(f"Resuming training from checkpoint: {cfg.checkpoint_path}")
         step, optimizer, lr_scheduler = load_training_state(cfg.checkpoint_path, optimizer, lr_scheduler)
 
     num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
@@ -424,7 +423,7 @@ def train(cfg: TrainPipelineConfig):
 
     for _ in range(step, cfg.steps):
         if is_distributed:
-            dist.barrier()
+            dist.barrier(device_ids=[local_rank])
 
         start_time = time.perf_counter()
         batch = next(train_dl_iter)
@@ -445,7 +444,7 @@ def train(cfg: TrainPipelineConfig):
             moe_aux_cfg=moe_aux_cfg,
         )
         if is_distributed:
-            dist.barrier()
+            dist.barrier(device_ids=[local_rank])
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
@@ -463,7 +462,7 @@ def train(cfg: TrainPipelineConfig):
                 logging.info(train_tracker)
                 log_wandb_tracker(wandb_logger, train_tracker, output_dict, step)
         if is_distributed:
-            dist.barrier()
+            dist.barrier(device_ids=[local_rank])
 
         if cfg.save_checkpoint and is_saving_step:
             if is_ddp_master(is_distributed, local_rank):
@@ -486,8 +485,6 @@ def train(cfg: TrainPipelineConfig):
                 update_last_checkpoint(checkpoint_dir)
                 if wandb_logger:
                     wandb_logger.log_policy(checkpoint_dir)
-        if is_distributed:
-            dist.barrier()
 
         if is_test_step:
             test_batch = next(test_dl_iter)
@@ -504,7 +501,7 @@ def train(cfg: TrainPipelineConfig):
                 logging.info(test_tracker)
                 log_wandb_tracker(wandb_logger, test_tracker, output_dict, step, mode='eval')
         if is_distributed:
-            dist.barrier()
+            dist.barrier(device_ids=[local_rank])
 
     logging.info("End of training")
     if is_distributed and dist.is_initialized():
