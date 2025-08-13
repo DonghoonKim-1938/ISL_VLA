@@ -85,9 +85,6 @@ class TrainPipelineConfig(HubMixin):
     prefix_tuning_cfg: dict[str, Any] | None = None
     lora_moe_cfg: dict[str, Any] | None = None
 
-    def __post_init__(self):
-        self.checkpoint_path = None
-
     def validate(self):
         # HACK: We parse again the cli args here to get the pretrained paths if there was some.
         policy_path = parser.get_path_arg("policy")
@@ -110,7 +107,7 @@ class TrainPipelineConfig(HubMixin):
                 )
             policy_path = Path(config_path).parent
             self.policy.pretrained_path = policy_path
-            self.checkpoint_path = policy_path.parent
+            self.checkpoint_path = policy_path.parent if self.checkpoint_path is None else self.checkpoint_path
 
         if not self.job_name:
             if self.env is None:

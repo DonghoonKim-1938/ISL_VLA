@@ -339,7 +339,6 @@ def train(cfg: TrainPipelineConfig):
     step = 0  # number of policy updates (forward + backward + optim)
 
     if cfg.resume:
-        cfg.checkpoint_path = PosixPath("/result/pi0_fullFT_pickplace/checkpoints/010000")
         logging.info(f"Resuming training from checkpoint: {cfg.checkpoint_path}")
         step, optimizer, lr_scheduler = load_training_state(cfg.checkpoint_path, optimizer, lr_scheduler)
 
