@@ -7,6 +7,7 @@ from pathlib import PosixPath
 from pprint import pformat
 from typing import Any
 import bitsandbytes as bnb
+import gc
 
 # LoRA / Prefix / LoRA-MoE injection utilities
 from common.policies.qlora import inject_qlora, QLoRAConfig as InjectQLoRAConfig
@@ -19,15 +20,7 @@ import torch
 from termcolor import colored
 from torch.amp import GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-
-# For custom auto-wrap
-from common.policies.lora import LoRALinear
-from common.policies.lora_moe import MoELoRALinear
-from common.policies.prefix_tuning import _PrefixEncoder
-from common.policies.qlora import QLoRALinear
-from common.policies.pi0.modeling_pi0 import PI0FlowMatching
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, StateDictType
 
 from torch.optim import Optimizer
 import torch.distributed as dist
@@ -282,14 +275,6 @@ def train(cfg: TrainPipelineConfig):
             logging.info("Using Vanilla Pi0")
 
     # Utilities to normalize dtypes across the model prior to FSDP wrapping
-    def _log_param_dtype_counts(module: torch.nn.Module, prefix: str = ""):
-        counts: dict[str, int] = {}
-        for p in module.parameters(recurse=True):
-            if isinstance(p, torch.Tensor):
-                key = str(p.dtype)
-                counts[key] = counts.get(key, 0) + 1
-        logging.info(f"{prefix} Parameter dtype counts: {counts}")
-
     def _force_cast_all_float_parameters(module: torch.nn.Module, target_dtype: torch.dtype):
         for _, param in module.named_parameters(recurse=True):
             if isinstance(param.data, torch.Tensor) and param.data.is_floating_point() and param.data.dtype != target_dtype:
@@ -314,8 +299,6 @@ def train(cfg: TrainPipelineConfig):
             buffer_dtype=torch.bfloat16,
         )
 
-        # Move to device without changing buffer dtypes
-        policy = policy.to(device=device)
         # Ensure all trainable parameters are bfloat16
         _force_cast_all_float_parameters(policy, target_dtype=torch.bfloat16)
 
@@ -326,6 +309,7 @@ def train(cfg: TrainPipelineConfig):
                 mixed_precision=mp_policy,
                 use_orig_params=True,
         )
+        policy = policy.to(device=device)
         policy_m = policy  # FSDP exposes params directly
         logging.info("Wrapped FSDP module")
     else:
@@ -431,6 +415,7 @@ def train(cfg: TrainPipelineConfig):
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(device, non_blocking=True)
+
         train_tracker, output_dict = update_policy(
             train_tracker,
             policy,
@@ -460,10 +445,12 @@ def train(cfg: TrainPipelineConfig):
             else:
                 logging.info(train_tracker)
                 log_wandb_tracker(wandb_logger, train_tracker, output_dict, step)
-        if is_distributed:
-            dist.barrier(device_ids=[local_rank])
 
         if cfg.save_checkpoint and is_saving_step:
+            if isinstance(policy, FSDP):
+                with FSDP.state_dict_type(policy, StateDictType.FULL_STATE_DICT):
+                    full_state_dict = {k: v.cpu() for k, v in policy.state_dict().items()}
+
             if is_ddp_master(is_distributed, local_rank):
                 logging.info(f"Checkpoint policy after step {step}")
                 checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
@@ -474,16 +461,24 @@ def train(cfg: TrainPipelineConfig):
                     cfg.save_pretrained(pretrained_dir)
                     save_adapters(policy_m, pretrained_dir / "adapters.safetensors")
                     save_training_state(checkpoint_dir, step, optimizer, lr_scheduler)
-                else:
+                elif not isinstance(policy, FSDP):
                     # Full model checkpoint
-                    if isinstance(policy, FSDP):
-                        save_checkpoint(checkpoint_dir, step, cfg, policy, optimizer, lr_scheduler, is_sharded=True)
-                    else:
-                        save_checkpoint(checkpoint_dir, step, cfg, policy_m, optimizer, lr_scheduler)
+                    save_checkpoint(checkpoint_dir, step, cfg, policy_m, optimizer, lr_scheduler)
+                else:
+                    assert isinstance(policy, FSDP)
+                    save_checkpoint(checkpoint_dir, step, cfg, policy_m, optimizer, lr_scheduler, is_sharded=True, state_dict=full_state_dict)
 
                 update_last_checkpoint(checkpoint_dir)
                 if wandb_logger:
                     wandb_logger.log_policy(checkpoint_dir)
+
+            if isinstance(policy, FSDP):
+                del full_state_dict
+                gc.collect()
+                torch.cuda.empty_cache()
+
+            if is_distributed:
+                dist.barrier()
 
         if is_test_step:
             test_batch = next(test_dl_iter)
@@ -499,8 +494,6 @@ def train(cfg: TrainPipelineConfig):
             if is_ddp_master(is_distributed, local_rank):
                 logging.info(test_tracker)
                 log_wandb_tracker(wandb_logger, test_tracker, output_dict, step, mode='eval')
-        if is_distributed:
-            dist.barrier(device_ids=[local_rank])
 
     logging.info("End of training")
     if is_distributed and dist.is_initialized():

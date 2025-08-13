@@ -79,6 +79,7 @@ def save_checkpoint(
     optimizer: Optimizer,
     scheduler: LRScheduler | None = None,
     is_sharded: bool = False,
+    state_dict: dict | None = None,
 ) -> None:
     """This function creates the following directory structure:
 
@@ -102,27 +103,25 @@ def save_checkpoint(
         scheduler (LRScheduler | None, optional): The scheduler to save the state from. Defaults to None.
     """
     pretrained_dir = checkpoint_dir / PRETRAINED_MODEL_DIR
-    save_pretrained_policy(policy, pretrained_dir, is_sharded=is_sharded)
+    save_pretrained_policy(policy, pretrained_dir, is_sharded=is_sharded, state_dict=state_dict)
     cfg.save_pretrained(pretrained_dir)
     save_training_state(checkpoint_dir, step, optimizer, scheduler)
 
 
-def save_pretrained_policy(policy: PreTrainedPolicy, pretrained_dir: Path, is_sharded: bool = False) -> None:
+def save_pretrained_policy(policy: PreTrainedPolicy, pretrained_dir: Path, is_sharded: bool = False, state_dict: dict | None = None) -> None:
     if is_sharded:
-        _save_sharded_policy(policy, pretrained_dir)
+        assert state_dict is not None
+        _save_sharded_policy(policy, pretrained_dir, state_dict)
     else:
         policy.save_pretrained(pretrained_dir)
 
 
-def _save_sharded_policy(policy: PreTrainedPolicy, save_directory: Path) -> None:
+def _save_sharded_policy(policy: PreTrainedPolicy, save_directory: Path, state_dict: dict) -> None:
     save_directory = Path(save_directory)
     save_directory.mkdir(parents=True, exist_ok=True)
 
     policy.config._save_pretrained(save_directory)
-
-    with FSDP.state_dict_type(policy, StateDictType.FULL_STATE_DICT):
-        full_state_dict = policy.state_dict()
-    torch.save(full_state_dict, str(save_directory / "model.pt"))
+    torch.save(state_dict, str(save_directory / "model.pt"))
 
 
 def save_training_state(

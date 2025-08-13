@@ -1,4 +1,4 @@
-DEVICES=0,1
+DEVICES=7,8
 TORCH_DISTRIBUTED_BUCKET_CAP_MB=10
 export PYTHONPATH=$(pwd)
 export TOKENIZERS_PARALLELISM=false
@@ -11,10 +11,12 @@ CUDA_VISIBLE_DEVICES=${DEVICES} \
     --master-port=29300 \
     --nproc_per_node=2 \
     scripts/train.py \
-    --policy.path=/ckpt/pi0 \
+    --policy.path=/result/pi0_fullFT_pickplace/checkpoints/010000/pretrained_model \
     --dist_mode=ddp \
     --lora_cfg='{"r":32,"alpha":64}' \
     --target_keywords='["all-linear"]' \
+    --resume=true \
+    --checkpoint_path="/result/pi0_fullFT_pickplace/checkpoints/010000" \
     --train_dataset.repo_id="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
     --train_dataset.root="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
     --test_dataset.repo_id="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
