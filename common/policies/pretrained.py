@@ -119,6 +119,7 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
             model_is_safetensor = True
             if not os.path.isfile(model_file):
                 model_file = os.path.join(model_id, "model.pt")
+                assert os.path.isfile(model_file)
                 model_is_safetensor = False
 
             policy = cls._load_as_safetensor(instance, model_file, config.device, strict, model_is_safetensor=model_is_safetensor)
