@@ -604,7 +604,7 @@ class PI0FlowMatching(nn.Module):
             mean=0.0,
             std=1.0,
             size=shape,
-            dtype=self.state_proj.weight.dtype,
+            dtype=self.sample_dtype if self.sample_dtype.is_floating_point else torch.bfloat16,
             device=device,
         )
         return noise

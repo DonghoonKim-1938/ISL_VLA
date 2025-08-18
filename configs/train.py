@@ -72,6 +72,7 @@ class TrainPipelineConfig(HubMixin):
     use_lora: bool | None = False
     use_prefix_tuning: bool | None = False
     use_lora_moe: bool | None = False
+    use_qlora_moe: bool | None = False
     # 분산 학습 모드: 'ddp', 'fsdp', 또는 'none'
     dist_mode: str | None = "none"
 
@@ -80,10 +81,11 @@ class TrainPipelineConfig(HubMixin):
     target_keywords: list[str] | None = None
 
     # Adapter specific hyper-parameters (overrides defaults).
-
+    qlora_cfg: dict[str, Any] | None = None
     lora_cfg: dict[str, Any] | None = None
     prefix_tuning_cfg: dict[str, Any] | None = None
     lora_moe_cfg: dict[str, Any] | None = None
+    qlora_moe_cfg: dict[str, Any] | None = None
 
     def validate(self):
         # HACK: We parse again the cli args here to get the pretrained paths if there was some.

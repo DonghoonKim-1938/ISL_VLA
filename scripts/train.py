@@ -14,7 +14,7 @@ from common.policies.qlora import inject_qlora, QLoRAConfig as InjectQLoRAConfig
 from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
 from common.policies.prefix_tuning import inject_prefix_tuning, PrefixTuningConfig
 from common.policies.lora_moe import inject_lora_moe, LoRAMoEConfig
-from common.policies.quantization import QuantizationConfig, quantize_model
+from common.policies.qlora_moe import inject_qlora_moe, QLoRAMoEConfig
 
 import torch
 from termcolor import colored
@@ -269,6 +269,15 @@ def train(cfg: TrainPipelineConfig):
         freeze_non_adapters(policy)
         if is_ddp_master(is_distributed, local_rank):
             logging.info("Injected LoRA-MoE modules")
+
+    elif getattr(cfg, "use_qlora_moe", False):
+        # Mixture-of-QLoRA experts
+        qlora_moe_cfg_obj = QLoRAMoEConfig(**(cfg.qlora_moe_cfg or {})) if hasattr(cfg, "qlora_moe_cfg") else QLoRAMoEConfig()
+        policy, _ = inject_qlora_moe(policy, qlora_moe_cfg_obj, target_keywords=cfg.target_keywords)
+        policy = policy.to(device=device)
+        freeze_non_adapters(policy)
+        if is_ddp_master(is_distributed, local_rank):
+            logging.info("Injected QLoRA-MoE modules")
 
     else:
         if is_ddp_master(is_distributed, local_rank):
