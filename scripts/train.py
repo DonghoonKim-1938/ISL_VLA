@@ -185,7 +185,7 @@ def train(cfg: TrainPipelineConfig):
             device, local_rank = torch.device("cuda"), 0  # single GPU
 
         if not dist.is_initialized():
-            dist.init_process_group(backend="gloo", timeout=datetime.timedelta(minutes=30))
+            dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=30))
         local_rank = dist.get_rank()
         device = torch.device("cuda", local_rank)
         torch.cuda.set_device(device)  # needed!
@@ -472,14 +472,13 @@ def train(cfg: TrainPipelineConfig):
                     assert isinstance(policy, FSDP)
                     save_checkpoint(checkpoint_dir, step, cfg, policy_m, optimizer, lr_scheduler, is_sharded=True, state_dict=full_state_dict)
 
+                    del full_state_dict
+                    gc.collect()
+                    torch.cuda.empty_cache()
+
                 update_last_checkpoint(checkpoint_dir)
                 if wandb_logger:
                     wandb_logger.log_policy(checkpoint_dir)
-
-            if isinstance(policy, FSDP):
-                del full_state_dict
-                gc.collect()
-                torch.cuda.empty_cache()
 
             if is_distributed:
                 dist.barrier()
