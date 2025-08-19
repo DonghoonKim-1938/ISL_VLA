@@ -73,8 +73,10 @@ class TrainPipelineConfig(HubMixin):
     use_prefix_tuning: bool | None = False
     use_lora_moe: bool | None = False
     use_qlora_moe: bool | None = False
+
     # 분산 학습 모드: 'ddp', 'fsdp', 또는 'none'
     dist_mode: str | None = "none"
+    gradient_checkpointing: bool = False
 
     # Adapter injection filtering: only layers whose names contain any of these keywords will be wrapped.
     # If None or empty, all matching layers are wrapped.
