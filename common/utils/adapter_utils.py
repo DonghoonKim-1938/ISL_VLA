@@ -4,13 +4,17 @@ from pathlib import Path
 from typing import Tuple, Set
 
 import torch
+import torch.nn as nn
 import safetensors.torch as sft
+
+from common.policies.lora_moe import MoELoRALinear
 
 __all__ = [
     "get_adapter_param_names",
     "collect_adapter_state_dict",
     "save_adapters",
     "load_adapters",
+    "load_adapters_as_expert"
 ]
 
 
@@ -52,3 +56,69 @@ def load_adapters(
     state = sft.load_file(str(adapters_file), device=str(device))
     res = model.load_state_dict(state, strict=False)
     return res, model
+
+
+def load_adapters_as_expert(
+        model: nn.Module,
+        adapters_file: str | Path,
+        expert_id: int,
+        device: str | torch.device = "cpu",
+) -> Tuple[list[str], list[str]]:
+    """
+    Load a pretrained LoRA adapter (saved as state_dict) into an existing MoE-LoRA model
+    by inserting it as one expert (expert_id).
+
+    Args:
+        model (nn.Module): Model with injected MoELoRALinear modules.
+        adapters_file (str | Path): Path to LoRA adapter weights (.pt or .bin).
+        expert_id (int): Index of expert slot to overwrite with LoRA adapter.
+    """
+    # Load pretrained LoRA adapter state
+    state = sft.load_file(str(adapters_file), device=str(device))
+
+    replaced = 0
+    missing_keys = []
+    unexpected_keys = []
+
+    for name, module in model.named_modules():
+        if isinstance(module, MoELoRALinear):
+            # Expected keys in LoRA adapter (e.g., from PEFT): 'lora_A.weight', 'lora_B.weight'
+            # Match shape to MoE expert slot
+            A_key = f"{name}.lora_A.weight"
+            B_key = f"{name}.lora_B.weight"
+
+            found = True
+            if A_key not in state:
+                missing_keys.append(A_key)
+                found = False
+            if B_key not in state:
+                missing_keys.append(B_key)
+                found = False
+
+            if found:
+                with torch.no_grad():
+                    module.A[expert_id].copy_(state[A_key])
+                    module.B[expert_id].copy_(state[B_key])
+                replaced += 1
+                print(f"[OK] Loaded LoRA expert for {name} into expert {expert_id}")
+
+                # Freeze expert weights
+                module.A.requires_grad_(False)
+                module.B.requires_grad_(False)
+                module.router.requires_grad_(True)
+
+        # unexpected_keys = state.keys() - actually used keys
+        used_keys = {f"{name}.lora_A.weight" for name, m in model.named_modules() if isinstance(m, MoELoRALinear)} | \
+                    {f"{name}.lora_B.weight" for name, m in model.named_modules() if isinstance(m, MoELoRALinear)}
+        unexpected_keys = [k for k in state.keys() if k not in used_keys]
+
+        if missing_keys:
+            print(f"[WARN] Missing keys: {missing_keys}")
+        if unexpected_keys:
+            print(f"[WARN] Unexpected keys: {unexpected_keys}")
+        if replaced == 0:
+            print("[WARN] No matching LoRA modules found in state_dict!")
+        else:
+            print(f"[INFO] Successfully injected LoRA into {replaced} MoELoRALinear layers.")
+
+        return missing_keys, unexpected_keys
