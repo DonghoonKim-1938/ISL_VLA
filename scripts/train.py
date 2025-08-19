@@ -46,7 +46,7 @@ from common.utils.utils import (
     is_ddp_master
 )
 # adapter utils
-from common.utils.adapter_utils import save_adapters
+from common.utils.adapter_utils import save_adapters, load_adapters_as_expert
 from common.utils.wandb_utils import WandBLogger
 from configs import parser
 from configs.train import TrainPipelineConfig
@@ -170,6 +170,12 @@ def train(cfg: TrainPipelineConfig):
     cfg.validate()
 
     # ---------------------------------------------------------
+    # HYPERPARAMETERS FOR DEBUGGING
+    # ---------------------------------------------------------
+    cfg.lora_moe_cfg = {"r":128,"alpha":256,"routing":"top1"}
+    cfg.gradient_checkpointing = True
+
+    # ---------------------------------------------------------
     # distributed mode flags
     # ---------------------------------------------------------
     dist_mode = getattr(cfg, "dist_mode", "none")  # 'ddp', 'fsdp', 'none'
@@ -283,6 +289,11 @@ def train(cfg: TrainPipelineConfig):
         if is_ddp_master(is_distributed, local_rank):
             logging.info("Using Vanilla Pi0")
 
+    if cfg.use_pretrained_lora:
+        assert cfg.use_lora_moe or cfg.use_qlora_moe
+        for expert_id, adapter_file in enumerate(cfg.adapter_file_paths):
+            missing_keys, unexpexted_keys = load_adapters_as_expert(policy, adapter_file, expert_id, device=device)
+
     # Utilities to normalize dtypes across the model prior to FSDP wrapping
     def _force_cast_all_float_parameters(module: torch.nn.Module, target_dtype: torch.dtype):
         for _, param in module.named_parameters(recurse=True):
@@ -367,10 +378,10 @@ def train(cfg: TrainPipelineConfig):
 
     # Determine MoE balance coeff if needed
     moe_aux_cfg = None
-    if getattr(cfg, "use_lora_moe", False):
+    if cfg.use_lora_moe or cfg.use_qlora_moe:
         moe_aux_cfg = {
-            "lb_coeff": (cfg.lora_moe_cfg or {}).get("lb_coeff", 0.01),
-            "z_coeff": (cfg.lora_moe_cfg or {}).get("z_coeff", 1e-3),
+            "lb_coeff": (cfg.lora_moe_cfg or cfg.qlora_moe_cfg or {}).get("lb_coeff", 0.01),
+            "z_coeff": (cfg.lora_moe_cfg or cfg.qlora_moe_cfg or {}).get("z_coeff", 1e-3),
         }
 
     policy.train()
@@ -412,6 +423,10 @@ def train(cfg: TrainPipelineConfig):
 
     if is_ddp_master(is_distributed, local_rank):
         logging.info("Start offline training on a fixed dataset")
+
+    if cfg.gradient_checkpointing:
+        policy_m.supports_gradient_checkpointing = True
+        policy_m.gradient_checkpointing_enable()
 
     for _ in range(step, cfg.steps):
         if isinstance(policy, FSDP):
