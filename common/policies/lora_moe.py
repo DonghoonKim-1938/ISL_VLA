@@ -19,6 +19,7 @@ class LoRAMoEConfig:
     num_experts: int = 4  # number of LoRA experts
     dropout: float = 0.05  # applied to input of adapters
     fan_in_fan_out: bool = False  # set True if base weight is transposed
+    routing: str = "weighted"   # "weighted", "top1", "top2"
 
     @property
     def scale(self) -> float:
@@ -93,6 +94,19 @@ class MoELoRALinear(nn.Module):
 
         # Compute gates
         gates = torch.softmax(self.router(x_dp), dim=-1)  # (..., E)
+
+        if self.cfg.routing == "top1":
+            top_idx = gates.argmax(dim=-1, keepdim=True)  # (..., 1)
+            mask = torch.zeros_like(gates).scatter_(-1, top_idx, 1.0)
+            gates = mask
+
+        elif self.cfg.routing == "top2":
+            top_vals, top_idx = torch.topk(gates, k=2, dim=-1)  # (..., 2)
+            mask = torch.zeros_like(gates).scatter_(-1, top_idx, top_vals)
+            gates = mask / (mask.sum(dim=-1, keepdim=True) + 1e-9)
+
+        else:
+            pass
 
         # Flatten leading dims for batched matmul
         leading_shape = x_dp.shape[:-1]              # (...)
