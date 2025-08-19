@@ -15,7 +15,7 @@ def make_dataloader(cfg, dataset, device):
         shuffle = True
         sampler = None
 
-    if cfg.use_ddp:
+    if getattr(cfg, "dist_mode", "ddp") in ("ddp", "fsdp"):
         sampler = DistributedSampler(dataset, shuffle=shuffle, seed=cfg.seed, drop_last=False)
         shuffle = False
 

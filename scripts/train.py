@@ -3,20 +3,25 @@ import time
 import os
 import datetime
 from contextlib import nullcontext
+from pathlib import PosixPath
 from pprint import pformat
 from typing import Any
+import bitsandbytes as bnb
+import gc
 
 # LoRA / Prefix / LoRA-MoE injection utilities
 from common.policies.qlora import inject_qlora, QLoRAConfig as InjectQLoRAConfig
 from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
 from common.policies.prefix_tuning import inject_prefix_tuning, PrefixTuningConfig
 from common.policies.lora_moe import inject_lora_moe, LoRAMoEConfig
-from common.policies.quantization import QuantizationConfig, quantize_model
+from common.policies.qlora_moe import inject_qlora_moe, QLoRAMoEConfig
 
 import torch
 from termcolor import colored
 from torch.amp import GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, StateDictType
+
 from torch.optim import Optimizer
 import torch.distributed as dist
 
@@ -41,7 +46,7 @@ from common.utils.utils import (
     is_ddp_master
 )
 # adapter utils
-from common.utils.adapter_utils import save_adapters
+from common.utils.adapter_utils import save_adapters, load_adapters_as_expert
 from common.utils.wandb_utils import WandBLogger
 from configs import parser
 from configs.train import TrainPipelineConfig
@@ -164,10 +169,24 @@ def test_policy(
 def train(cfg: TrainPipelineConfig):
     cfg.validate()
 
+    # ---------------------------------------------------------
+    # HYPERPARAMETERS FOR DEBUGGING
+    # ---------------------------------------------------------
+    cfg.lora_moe_cfg = {"r":128,"alpha":256,"routing":"top1"}
+    cfg.gradient_checkpointing = True
+
+    # ---------------------------------------------------------
+    # distributed mode flags
+    # ---------------------------------------------------------
+    dist_mode = getattr(cfg, "dist_mode", "none")  # 'ddp', 'fsdp', 'none'
+    use_ddp = dist_mode == "ddp"
+    use_fsdp = dist_mode == "fsdp"
+    is_distributed = use_ddp or use_fsdp
+
     device = get_safe_torch_device(cfg.policy.device, log=True)
     torch.backends.cuda.matmul.allow_tf32 = True
 
-    if cfg.use_ddp:
+    if is_distributed:
         if os.environ.get("LOCAL_RANK", -1) == -1:  # not called by torchrun, do not initialize dist.
             device, local_rank = torch.device("cuda"), 0  # single GPU
 
@@ -176,31 +195,33 @@ def train(cfg: TrainPipelineConfig):
         local_rank = dist.get_rank()
         device = torch.device("cuda", local_rank)
         torch.cuda.set_device(device)  # needed!
-        logging.info(f"Local Rank ({local_rank}) Initialized for DDP")
+        logging.info(f"Local Rank ({local_rank}) Initialized for {dist_mode.upper()}")
     else:
         local_rank = 0
     cfg.policy.device = str(device)
 
-    if is_ddp_master(cfg.use_ddp, local_rank):
+    if is_ddp_master(is_distributed, local_rank):
         logging.info(pformat(cfg.to_dict()))
 
     if cfg.seed is not None:
         set_seed(cfg.seed)
 
     if cfg.wandb.enable and cfg.wandb.project:
-        if is_ddp_master(cfg.use_ddp, local_rank):
+        if is_ddp_master(is_distributed, local_rank):
             wandb_logger = WandBLogger(cfg)
     else:
         wandb_logger = None
         logging.info(colored("Logs will be saved locally.", "yellow", attrs=["bold"]))
 
-    if is_ddp_master(cfg.use_ddp, local_rank):
+    if is_ddp_master(is_distributed, local_rank):
         logging.info("Creating dataset")
+
     train_dataset = make_dataset(cfg, split="train")
     test_dataset = make_dataset(cfg, split="test")
 
-    if is_ddp_master(cfg.use_ddp, local_rank):
+    if is_ddp_master(is_distributed, local_rank):
         logging.info("Creating policy")
+        
     policy = make_policy(
         cfg=cfg.policy,
         ds_meta = train_dataset.meta,
@@ -211,13 +232,13 @@ def train(cfg: TrainPipelineConfig):
     if getattr(cfg, "train_linear_only", False):
         policy.unfreeze_linear_layers()
         policy = policy.to(device=device)
-        if is_ddp_master(cfg.use_ddp, local_rank):
+        if is_ddp_master(is_distributed, local_rank):
             logging.info("Unfreezed Linear only")
 
     elif getattr(cfg, "use_lin_prob", False):
         policy.unfreeze_action_out_proj()
         policy = policy.to(device=device)
-        if is_ddp_master(cfg.use_ddp, local_rank):
+        if is_ddp_master(is_distributed, local_rank):
             logging.info("Unfreezed action output projection")
 
     elif getattr(cfg, "use_qlora", False):
@@ -225,7 +246,7 @@ def train(cfg: TrainPipelineConfig):
         policy, _ = inject_qlora(policy, qlora_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
         freeze_non_adapters(policy)
-        if is_ddp_master(cfg.use_ddp, local_rank):
+        if is_ddp_master(is_distributed, local_rank):
             logging.info("Injected QLoRA modules")
 
     elif getattr(cfg, "use_lora", False):
@@ -234,7 +255,7 @@ def train(cfg: TrainPipelineConfig):
         policy, _ = inject_lora(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
         freeze_non_adapters(policy)
-        if is_ddp_master(cfg.use_ddp, local_rank):
+        if is_ddp_master(is_distributed, local_rank):
             logging.info("Injected LoRA modules")
 
     elif getattr(cfg, "use_prefix_tuning", False):
@@ -243,7 +264,7 @@ def train(cfg: TrainPipelineConfig):
         policy, _ = inject_prefix_tuning(policy, pt_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
         freeze_non_adapters(policy)
-        if is_ddp_master(cfg.use_ddp, local_rank):
+        if is_ddp_master(is_distributed, local_rank):
             logging.info("Injected Prefix-Tuning modules")
 
     elif getattr(cfg, "use_lora_moe", False):
@@ -252,14 +273,35 @@ def train(cfg: TrainPipelineConfig):
         policy, _ = inject_lora_moe(policy, lora_moe_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
         freeze_non_adapters(policy)
-        if is_ddp_master(cfg.use_ddp, local_rank):
+        if is_ddp_master(is_distributed, local_rank):
             logging.info("Injected LoRA-MoE modules")
 
+    elif getattr(cfg, "use_qlora_moe", False):
+        # Mixture-of-QLoRA experts
+        qlora_moe_cfg_obj = QLoRAMoEConfig(**(cfg.qlora_moe_cfg or {})) if hasattr(cfg, "qlora_moe_cfg") else QLoRAMoEConfig()
+        policy, _ = inject_qlora_moe(policy, qlora_moe_cfg_obj, target_keywords=cfg.target_keywords)
+        policy = policy.to(device=device)
+        freeze_non_adapters(policy)
+        if is_ddp_master(is_distributed, local_rank):
+            logging.info("Injected QLoRA-MoE modules")
+
     else:
-        if is_ddp_master(cfg.use_ddp, local_rank):
+        if is_ddp_master(is_distributed, local_rank):
             logging.info("Using Vanilla Pi0")
 
-    if cfg.use_ddp:
+    if cfg.use_pretrained_lora:
+        assert cfg.use_lora_moe or cfg.use_qlora_moe
+        for expert_id, adapter_file in enumerate(cfg.adapter_file_paths):
+            missing_keys, unexpexted_keys = load_adapters_as_expert(policy, adapter_file, expert_id, device=device)
+
+    # Utilities to normalize dtypes across the model prior to FSDP wrapping
+    def _force_cast_all_float_parameters(module: torch.nn.Module, target_dtype: torch.dtype):
+        for _, param in module.named_parameters(recurse=True):
+            if isinstance(param.data, torch.Tensor) and param.data.is_floating_point() and param.data.dtype != target_dtype:
+                param.data = param.data.to(target_dtype)
+
+    if dist_mode == "ddp":
+        # Wrap with DDP
         if dist.is_initialized() and dist.is_available():
             policy = DDP(
                 policy,
@@ -270,10 +312,30 @@ def train(cfg: TrainPipelineConfig):
             )
             policy_m = policy.module
         logging.info(f"Wrapped DDP module for local rank {local_rank}")
+    elif dist_mode == "fsdp":
+        mp_policy = MixedPrecision(
+            param_dtype=torch.bfloat16,
+            reduce_dtype=torch.float32,
+            buffer_dtype=torch.bfloat16,
+        )
+
+        # Ensure all trainable parameters are bfloat16
+        _force_cast_all_float_parameters(policy, target_dtype=torch.bfloat16)
+
+        # Robust construction across torch versions: prefer use_orig_params, else fall back
+        policy = FSDP(
+                policy,
+                device_id=device,
+                mixed_precision=mp_policy,
+                use_orig_params=True,
+        )
+        policy = policy.to(device=device)
+        policy_m = policy  # FSDP exposes params directly
+        logging.info("Wrapped FSDP module")
     else:
         policy_m = policy
 
-    if is_ddp_master(cfg.use_ddp, local_rank):
+    if is_ddp_master(is_distributed, local_rank):
         logging.info("Creating optimizer and scheduler")
     optimizer, lr_scheduler = make_optimizer_and_scheduler(cfg, policy_m)
     grad_scaler = GradScaler(device.type, enabled=cfg.policy.use_amp)
@@ -281,13 +343,14 @@ def train(cfg: TrainPipelineConfig):
     step = 0  # number of policy updates (forward + backward + optim)
 
     if cfg.resume:
+        logging.info(f"Resuming training from checkpoint: {cfg.checkpoint_path}")
         step, optimizer, lr_scheduler = load_training_state(cfg.checkpoint_path, optimizer, lr_scheduler)
 
     num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     num_total_params = sum(p.numel() for p in policy.parameters())
     learnable_params_proportion = 100.0 * (num_learnable_params / num_total_params) if num_total_params > 0 else 0.0
 
-    if is_ddp_master(cfg.use_ddp, local_rank):
+    if is_ddp_master(is_distributed, local_rank):
         logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
         logging.info(f"{cfg.steps=} ({format_big_number(cfg.steps)})")
         logging.info(f"{train_dataset.num_frames=} ({format_big_number(train_dataset.num_frames)})")
@@ -315,10 +378,10 @@ def train(cfg: TrainPipelineConfig):
 
     # Determine MoE balance coeff if needed
     moe_aux_cfg = None
-    if getattr(cfg, "use_lora_moe", False):
+    if cfg.use_lora_moe or cfg.use_qlora_moe:
         moe_aux_cfg = {
-            "lb_coeff": (cfg.lora_moe_cfg or {}).get("lb_coeff", 0.01),
-            "z_coeff": (cfg.lora_moe_cfg or {}).get("z_coeff", 1e-3),
+            "lb_coeff": (cfg.lora_moe_cfg or cfg.qlora_moe_cfg or {}).get("lb_coeff", 0.01),
+            "z_coeff": (cfg.lora_moe_cfg or cfg.qlora_moe_cfg or {}).get("z_coeff", 1e-3),
         }
 
     policy.train()
@@ -358,12 +421,20 @@ def train(cfg: TrainPipelineConfig):
         initial_step=step,
     )
 
-    if is_ddp_master(cfg.use_ddp, local_rank):
+    if is_ddp_master(is_distributed, local_rank):
         logging.info("Start offline training on a fixed dataset")
 
+    if cfg.gradient_checkpointing:
+        policy_m.supports_gradient_checkpointing = True
+        policy_m.gradient_checkpointing_enable()
+
     for _ in range(step, cfg.steps):
-        if cfg.use_ddp:
-            dist.barrier()
+        if isinstance(policy, FSDP):
+            gc.collect()
+            torch.cuda.empty_cache()
+
+        if is_distributed:
+            dist.barrier(device_ids=[local_rank])
 
         start_time = time.perf_counter()
         batch = next(train_dl_iter)
@@ -372,6 +443,7 @@ def train(cfg: TrainPipelineConfig):
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(device, non_blocking=True)
+
         train_tracker, output_dict = update_policy(
             train_tracker,
             policy,
@@ -383,6 +455,8 @@ def train(cfg: TrainPipelineConfig):
             use_amp=cfg.policy.use_amp,
             moe_aux_cfg=moe_aux_cfg,
         )
+        if is_distributed:
+            dist.barrier(device_ids=[local_rank])
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
@@ -394,14 +468,18 @@ def train(cfg: TrainPipelineConfig):
         is_test_step = cfg.test_freq > 0 and step % cfg.test_freq == 0
 
         if is_log_step:
-            if cfg.use_ddp and (dist.get_rank() != 0):
+            if is_distributed and (dist.get_rank() != 0):
                 pass
             else:
                 logging.info(train_tracker)
                 log_wandb_tracker(wandb_logger, train_tracker, output_dict, step)
 
         if cfg.save_checkpoint and is_saving_step:
-            if is_ddp_master(cfg.use_ddp, local_rank):
+            if isinstance(policy, FSDP):
+                with FSDP.state_dict_type(policy, StateDictType.FULL_STATE_DICT):
+                    full_state_dict = {k: v.cpu() for k, v in policy.state_dict().items()}
+
+            if is_ddp_master(is_distributed, local_rank):
                 logging.info(f"Checkpoint policy after step {step}")
                 checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
 
@@ -411,13 +489,23 @@ def train(cfg: TrainPipelineConfig):
                     cfg.save_pretrained(pretrained_dir)
                     save_adapters(policy_m, pretrained_dir / "adapters.safetensors")
                     save_training_state(checkpoint_dir, step, optimizer, lr_scheduler)
-                else:
+                elif not isinstance(policy, FSDP):
                     # Full model checkpoint
                     save_checkpoint(checkpoint_dir, step, cfg, policy_m, optimizer, lr_scheduler)
+                else:
+                    assert isinstance(policy, FSDP)
+                    save_checkpoint(checkpoint_dir, step, cfg, policy_m, optimizer, lr_scheduler, is_sharded=True, state_dict=full_state_dict)
+
+                    del full_state_dict
+                    gc.collect()
+                    torch.cuda.empty_cache()
 
                 update_last_checkpoint(checkpoint_dir)
                 if wandb_logger:
                     wandb_logger.log_policy(checkpoint_dir)
+
+            if is_distributed:
+                dist.barrier()
 
         if is_test_step:
             test_batch = next(test_dl_iter)
@@ -430,12 +518,13 @@ def train(cfg: TrainPipelineConfig):
                 use_amp=cfg.policy.use_amp,
             )
 
-            if is_ddp_master(cfg.use_ddp, local_rank):
+            if is_ddp_master(is_distributed, local_rank):
                 logging.info(test_tracker)
                 log_wandb_tracker(wandb_logger, test_tracker, output_dict, step, mode='eval')
 
     logging.info("End of training")
-    dist.destroy_process_group()
+    if is_distributed and dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

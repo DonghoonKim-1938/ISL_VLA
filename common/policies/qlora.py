@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import bitsandbytes as bnb
-from bitsandbytes.nn import Linear4bit
+
 
 # ---------------------------------------------------------------------------
 # Config & Utilities

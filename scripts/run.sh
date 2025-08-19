@@ -1,20 +1,22 @@
-DEVICES=0,1,2,3,4,5,6
+DEVICES=7,8
 TORCH_DISTRIBUTED_BUCKET_CAP_MB=10
 export PYTHONPATH=$(pwd)
 export TOKENIZERS_PARALLELISM=false
 
 BASELINE="pi0"
-DATA_ROOT_DIR="piper_multitask"
+DATA_ROOT_DIR="piper_pickplace"
 
 CUDA_VISIBLE_DEVICES=${DEVICES} \
   torchrun \
     --master-port=29300 \
-    --nproc_per_node=7 \
+    --nproc_per_node=2 \
     scripts/train.py \
-    --policy.path=/ckpt/pi0 \
-    --use_ddp=true \
+    --policy.path=/result/pi0_fullFT_pickplace/checkpoints/010000/pretrained_model \
+    --dist_mode=ddp \
     --lora_cfg='{"r":32,"alpha":64}' \
     --target_keywords='["all-linear"]' \
+    --resume=true \
+    --checkpoint_path="/result/pi0_fullFT_pickplace/checkpoints/010000" \
     --train_dataset.repo_id="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
     --train_dataset.root="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
     --test_dataset.repo_id="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
@@ -22,8 +24,9 @@ CUDA_VISIBLE_DEVICES=${DEVICES} \
     --wandb.project=ISL_VLA \
     --wandb.enable=true \
     --wandb.disable_artifact=true \
-    --output_dir=/result/${BASELINE}_fullFT_multitask \
-    --job_name=${BASELINE}_fullFT_multitask \
+    --wandb.run_id=${BASELINE}_fullFT_pickplace \
+    --output_dir=/result/${BASELINE}_fullFT_pickplace \
+    --job_name=${BASELINE}_fullFT_pickplace \
     --batch_size=6 \
     --num_workers=16 \
     --log_freq=10 \

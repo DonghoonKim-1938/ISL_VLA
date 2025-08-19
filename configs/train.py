@@ -58,6 +58,7 @@ class TrainPipelineConfig(HubMixin):
     test_freq: int = 1
     log_freq: int = 200
     save_checkpoint: bool = True
+    checkpoint_path: Path | None = None
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
     save_freq: int = 20_000
     use_policy_training_preset: bool = True
@@ -66,14 +67,16 @@ class TrainPipelineConfig(HubMixin):
     eval: EvalConfig = field(default_factory=EvalConfig)
     wandb: WandBConfig = field(default_factory=WandBConfig)
 
-    train_linear_only: bool | None = False
-    use_lin_prob: bool | None = False
     use_quantization: bool | None = False
     use_qlora: bool | None = False
     use_lora: bool | None = False
     use_prefix_tuning: bool | None = False
     use_lora_moe: bool | None = False
-    use_ddp: bool | None = False
+    use_qlora_moe: bool | None = False
+
+    # 분산 학습 모드: 'ddp', 'fsdp', 또는 'none'
+    dist_mode: str | None = "none"
+    gradient_checkpointing: bool = False
 
     # Adapter injection filtering: only layers whose names contain any of these keywords will be wrapped.
     # If None or empty, all matching layers are wrapped.
@@ -84,9 +87,7 @@ class TrainPipelineConfig(HubMixin):
     lora_cfg: dict[str, Any] | None = None
     prefix_tuning_cfg: dict[str, Any] | None = None
     lora_moe_cfg: dict[str, Any] | None = None
-
-    def __post_init__(self):
-        self.checkpoint_path = None
+    qlora_moe_cfg: dict[str, Any] | None = None
 
     def validate(self):
         # HACK: We parse again the cli args here to get the pretrained paths if there was some.
@@ -110,7 +111,7 @@ class TrainPipelineConfig(HubMixin):
                 )
             policy_path = Path(config_path).parent
             self.policy.pretrained_path = policy_path
-            self.checkpoint_path = policy_path.parent
+            self.checkpoint_path = policy_path.parent if self.checkpoint_path is None else self.checkpoint_path
 
         if not self.job_name:
             if self.env is None:
@@ -133,9 +134,14 @@ class TrainPipelineConfig(HubMixin):
 
         if not self.use_policy_training_preset and (self.optimizer is None or self.scheduler is None):
             raise ValueError("Optimizer and Scheduler must be set when the policy presets are not used.")
-        elif self.use_policy_training_preset and not self.resume:
+        elif self.use_policy_training_preset:
             self.optimizer = self.policy.get_optimizer_preset()
             self.scheduler = self.policy.get_scheduler_preset()
+
+        # dist_mode 유효성 검사
+        valid_modes = ("ddp", "fsdp", "none", None)
+        if self.dist_mode not in valid_modes:
+            raise ValueError(f"dist_mode must be one of {valid_modes}, got {self.dist_mode}")
 
     @classmethod
     def __get_path_fields__(cls) -> list[str]:

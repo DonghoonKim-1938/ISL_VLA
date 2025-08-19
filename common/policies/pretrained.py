@@ -24,6 +24,7 @@ from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 from huggingface_hub.errors import HfHubHTTPError
 from safetensors.torch import load_model as load_model_as_safetensor
 from safetensors.torch import save_model as save_model_as_safetensor
+import torch
 from torch import Tensor, nn
 from transformers import PreTrainedModel as HFPreTrainedModel
 
@@ -115,7 +116,13 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
         if os.path.isdir(model_id):
             print("Loading weights from local directory")
             model_file = os.path.join(model_id, SAFETENSORS_SINGLE_FILE)
-            policy = cls._load_as_safetensor(instance, model_file, config.device, strict)
+            model_is_safetensor = True
+            if not os.path.isfile(model_file):
+                model_file = os.path.join(model_id, "model.pt")
+                assert os.path.isfile(model_file)
+                model_is_safetensor = False
+
+            policy = cls._load_as_safetensor(instance, model_file, config.device, strict, model_is_safetensor=model_is_safetensor)
         else:
             try:
                 model_file = hf_hub_download(
@@ -140,19 +147,24 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
         return policy
 
     @classmethod
-    def _load_as_safetensor(cls, model: T, model_file: str, map_location: str, strict: bool) -> T:
-        if packaging.version.parse(safetensors.__version__) < packaging.version.parse("0.4.3"):
-            load_model_as_safetensor(model, model_file, strict=strict)
-            if map_location != "cpu":
-                logging.warning(
-                    "Loading model weights on other devices than 'cpu' is not supported natively in your version of safetensors."
-                    " This means that the model is loaded on 'cpu' first and then copied to the device."
-                    " This leads to a slower loading time."
-                    " Please update safetensors to version 0.4.3 or above for improved performance."
-                )
-                model.to(map_location)
+    def _load_as_safetensor(cls, model: T, model_file: str, map_location: str, strict: bool, model_is_safetensor: bool = True) -> T:
+        if model_is_safetensor:
+            if packaging.version.parse(safetensors.__version__) < packaging.version.parse("0.4.3"):
+                load_model_as_safetensor(model, model_file, strict=strict)
+                if map_location != "cpu":
+                    logging.warning(
+                        "Loading model weights on other devices than 'cpu' is not supported natively in your version of safetensors."
+                        " This means that the model is loaded on 'cpu' first and then copied to the device."
+                        " This leads to a slower loading time."
+                        " Please update safetensors to version 0.4.3 or above for improved performance."
+                    )
+                    model.to(map_location)
+            else:
+                safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
         else:
-            safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
+            state_dict = torch.load(model_file, map_location=map_location)
+            model.load_state_dict(state_dict)
+            model.to(map_location)
         return model
 
     # def generate_model_card(self, *args, **kwargs) -> ModelCard:
