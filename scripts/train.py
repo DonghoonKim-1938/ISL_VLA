@@ -289,10 +289,10 @@ def train(cfg: TrainPipelineConfig):
         if is_ddp_master(is_distributed, local_rank):
             logging.info("Using Vanilla Pi0")
 
-    if cfg.use_pretrained_lora:
-        assert cfg.use_lora_moe or cfg.use_qlora_moe
-        for expert_id, adapter_file in enumerate(cfg.adapter_file_paths):
-            missing_keys, unexpexted_keys = load_adapters_as_expert(policy, adapter_file, expert_id, device=device)
+    # if cfg.use_pretrained_lora:
+    #     assert cfg.use_lora_moe or cfg.use_qlora_moe
+    #     for expert_id, adapter_file in enumerate(cfg.adapter_file_paths):
+    #         missing_keys, unexpexted_keys = load_adapters_as_expert(policy, adapter_file, expert_id, device=device)
 
     # Utilities to normalize dtypes across the model prior to FSDP wrapping
     def _force_cast_all_float_parameters(module: torch.nn.Module, target_dtype: torch.dtype):

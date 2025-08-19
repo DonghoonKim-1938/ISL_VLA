@@ -89,14 +89,18 @@ class MoEQLoRALinear(nn.Module):
         nn.init.zeros_(self.B)
 
         # Router (token‑wise gating)
-        self.router = nn.Linear(in_f, cfg.num_experts, bias=False)
-        self.router.weight.data.zero_()
-        self.router.to(dtype=base.weight.dtype)
+        self.track_router_stats = True
+        self.router = nn.Linear(in_f, cfg.num_experts, bias=False, dtype=base.weight.dtype)
+        with torch.no_grad():
+            self.router.weight.data.zero_()
 
         self.dropout = nn.Dropout(cfg.dropout) if cfg.dropout > 0.0 else nn.Identity()
 
         # expose merge flag similar to LoRA
         self._merged: bool = False
+
+        self._last_router_logits = None
+        self._last_gates = None
 
     # ---------------------------------------------------------
     # Expose base weight param
@@ -106,28 +110,49 @@ class MoEQLoRALinear(nn.Module):
     def weight(self):  # type: ignore
         return self.base.weight
 
+    def _detach_cache(self, logits: torch.Tensor, gates: torch.Tensor):
+        """DDP/ckpt 안전하게 저장: graph와 분리된 텐서만 보관."""
+        if not self.track_router_stats:
+            return
+        # 작은 텐서라면 float32로 복사해두면 수치적으로도 안전
+        self._last_router_logits = logits.detach().float()
+        self._last_gates = gates.detach().float()
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore
         """Assumes input shape (..., in_features).  Router acts on last dim."""
         base_out = self.base(x)
         x_dp = self.dropout(x)
 
-        # Compute gates
-        gates = torch.softmax(self.router(x_dp), dim=-1)  # (..., E)
+        # Router logits + gates
+        router_logits = self.router(x_dp)  # (..., E)
+        gates = torch.softmax(router_logits, dim=-1)  # (..., E)
+
+        self._detach_cache(router_logits, gates)
+
+        if self.cfg.routing == "top1":
+            _, top_idx = torch.topk(gates, k=1, dim=-1)  # (..., 1)
+            mask = torch.zeros_like(gates).scatter_(-1, top_idx, 1.0)
+            gates = mask
+
+        elif self.cfg.routing == "top2":
+            top_vals, top_idx = torch.topk(gates, k=2, dim=-1)  # (..., 2)
+            mask = torch.zeros_like(gates).scatter_(-1, top_idx, top_vals)
+            gates = mask / (mask.sum(dim=-1, keepdim=True) + 1e-9)
+
+        else:
+            pass
 
         # Flatten leading dims for batched matmul
         leading_shape = x_dp.shape[:-1]  # (...)
         in_f = self.base.in_features
-        # x_flat = x_dp.reshape(-1, in_f)              # (N, in)
 
         A_t = self.A.transpose(-1, 1)  # (E, in, r)
         B_t = self.B.transpose(-1, 1)  # (E, r, out)
 
         # (N, 1, in) × (E, in, r) -> (N, E, r)
-        # proj_r = torch.matmul(x_flat.unsqueeze(1), A_t)  # (N, E, r)
         proj_r = torch.matmul(x_dp.unsqueeze(1), A_t.unsqueeze(0))  # (B, E, S, r)
 
         # (N, E, r) × (E, r, out) -> (N, E, out)
-        # lora_out = torch.matmul(proj_r, B_t)             # (N, E, out)
         lora_out = torch.matmul(proj_r, B_t.unsqueeze(0))  # (B, E, S, out)
 
         # Restore leading shape

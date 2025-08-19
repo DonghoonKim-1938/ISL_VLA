@@ -15,7 +15,10 @@ def router_balance_loss(
     for module in model.modules():
         if isinstance(module, MoELoRALinear) and hasattr(module, "_last_gates"):
             gates = module._last_gates                      # (..., E) softmax 확률
-            E = gates.shape[-1]
+            if gates is not None:
+                E = gates.shape[-1]
+            else:
+                continue
 
             # p_j : 확률 평균
             p = gates.mean(dim=tuple(range(gates.dim() - 1)))     # (E,)
@@ -48,9 +51,9 @@ def router_z_loss(
     for module in model.modules():
         # 라우터가 최근 step의 'pre‑softmax logits'를 따로 저장해 두었다고 가정
         if isinstance(module, MoELoRALinear):
-            if hasattr(module, "_last_router_logits"):
+            if module._last_router_logits is not None:
                 logits = module._last_router_logits            # (..., E)
-            elif hasattr(module, "_last_gates"):
+            elif module._last_gates is not None:
                 # fallback: log(prob) 로 근사 (정확하지 않지만 없는 것보단 낫다)
                 logits = (module._last_gates.clamp_min(1e-9)).log()
             else:
