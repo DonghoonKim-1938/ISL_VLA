@@ -70,7 +70,7 @@ class MoELoRALinear(nn.Module):
         nn.init.zeros_(self.B)
 
         # Router (token‑wise gating)
-        self.track_router_stats = True
+        self.track_router_stats = False
         self.router = nn.Linear(in_f, cfg.num_experts, bias=False, dtype=base.weight.dtype)
         nn.init.kaiming_uniform_(self.router.weight, a=math.sqrt(5))
 
@@ -99,7 +99,10 @@ class MoELoRALinear(nn.Module):
             self._last_router_logits = logits
             self._last_gates = gates
 
-    def _clear_cache(self):
+    def get_router_tensor(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self._last_router_logits, self._last_gates
+
+    def clear_cache(self):
         self._last_router_logits = None
         self._last_gates = None
 

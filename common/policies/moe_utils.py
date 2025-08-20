@@ -6,64 +6,66 @@ from typing import Tuple
 from common.policies.lora_moe import MoELoRALinear
 
 # ---------- ① Load‑Balancing Loss (Switch 스타일) ----------
-def router_balance_loss(
-    model: nn.Module,
-) -> Tuple[torch.Tensor, int]:
+def compute_balance_loss(
+    gates: torch.Tensor,
+) -> torch.Tensor | None:
     """Switch‑style load‑balancing loss = N · (f·p)."""
-    losses = []
-    for module in model.modules():
-        if isinstance(module, MoELoRALinear) and hasattr(module, "_last_gates"):
-            gates = module._last_gates                      # (..., E) softmax 확률
-            if gates is not None:
-                E = gates.shape[-1]
-            else:
-                continue
+    if gates is not None:
+        E = gates.shape[-1]
+    else:
+        return
 
-            # p_j : 확률 평균
-            p = gates.mean(dim=tuple(range(gates.dim() - 1)))     # (E,)
+    # p_j : 확률 평균
+    p = gates.mean(dim=tuple(range(gates.dim() - 1)))     # (E,)
 
-            # f_j : 실제 토큰 분포 (hard one‑hot)
-            hard = F.one_hot(gates.argmax(-1), E)
-            f = hard.float().mean(dim=tuple(range(hard.dim() - 1)))
+    # f_j : 실제 토큰 분포 (hard one‑hot)
+    hard = F.one_hot(gates.argmax(-1), E)
+    f = hard.float().mean(dim=tuple(range(hard.dim() - 1)))
 
-            loss = (f * p).sum() * E                           # N·(f·p)
-            losses.append(loss)
-            # Do not clear cache here; trainer will handle after all aux losses are computed.
+    loss = (f * p).sum() * E                           # N·(f·p)
 
-    if not losses:
-        device = next(model.parameters()).device
-        return torch.tensor(0.0, device=device), 0
-
-    return torch.stack(losses).mean(), len(losses)
+    return loss
 
 
 # ---------- ② Router Z‑Loss ----------
-def router_z_loss(
-    model: nn.Module,
-) -> Tuple[torch.Tensor, int]:
+def compute_z_loss(
+    logits: torch.Tensor,
+    gates: torch.Tensor,
+) -> torch.Tensor | None:
     r"""Penalize large log‑sum‑exp of router logits for numerical stability.
-
     \mathcal L_z = coeff · mean( logsumexp(logits, dim=-1)^2 )
     """
-    losses = []
+    if logits is not None:
+        pass
+    elif gates is not None:
+        logits = gates.clamp_min(1e-9).log()
+    else:
+        return
+
+    z = torch.logsumexp(logits, dim=-1)                # (...)
+    loss = (z ** 2).mean()
+
+    return loss
+
+
+def compute_router_loss(
+    model: nn.Module,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    lb_losses, z_losses = [], []
+
     for module in model.modules():
-        # 라우터가 최근 step의 'pre‑softmax logits'를 따로 저장해 두었다고 가정
         if isinstance(module, MoELoRALinear):
-            if module._last_router_logits is not None:
-                logits = module._last_router_logits            # (..., E)
-            elif module._last_gates is not None:
-                # fallback: log(prob) 로 근사 (정확하지 않지만 없는 것보단 낫다)
-                logits = (module._last_gates.clamp_min(1e-9)).log()
-            else:
-                continue
+            logits, gates = module.get_router_tensor()            # (..., E)
 
-            z = torch.logsumexp(logits, dim=-1)                # (...)
-            loss = (z ** 2).mean()
-            losses.append(loss)
-            # Cache clearing deferred to caller
+            lb_loss = compute_balance_loss(gates)
+            z_loss = compute_z_loss(logits, gates)
 
-    if not losses:
-        device = next(model.parameters()).device
-        return torch.tensor(0.0, device=device), 0
+            lb_losses.append(lb_loss) if lb_loss is not None else None
+            z_losses.append(z_loss) if z_loss is not None else None
 
-    return torch.stack(losses).mean(), len(losses)
+            module.clear_cache()
+
+    lb_loss = torch.stack(lb_losses).mean()
+    z_loss = torch.stack(z_losses).mean()
+
+    return lb_loss, z_loss

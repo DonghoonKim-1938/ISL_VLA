@@ -69,6 +69,7 @@ from common.policies.pi0.paligemma_with_expert import (
 )
 from common.policies.pretrained import PreTrainedPolicy
 from common.utils.utils import get_safe_dtype
+from common.policies.moe_utils import compute_router_loss
 
 
 def create_sinusoidal_pos_embedding(
@@ -409,7 +410,7 @@ class PI0Policy(PreTrainedPolicy):
 
         return self._action_queue.popleft()
 
-    def forward(self, batch: dict[str, Tensor], noise=None, time=None) -> tuple[Tensor, dict[str, Tensor]]:
+    def forward(self, batch: dict[str, Tensor], noise=None, time=None, moe_aux_cfg=None) -> tuple[Tensor, dict[str, Tensor]]:
         """Do a full training forward pass to compute the loss"""
         if self.config.adapt_to_pi_aloha:
             batch[OBS_ROBOT] = self._pi_aloha_decode_state(batch[OBS_ROBOT])
@@ -441,6 +442,20 @@ class PI0Policy(PreTrainedPolicy):
         loss = losses.mean()
         # For logging
         loss_dict["l2_loss"] = loss.item()
+
+        if moe_aux_cfg is not None:
+            # Compute raw (unscaled) auxiliary losses
+            lb_coeff = moe_aux_cfg.get("lb_coeff", 0.01)
+            z_coeff = moe_aux_cfg.get("z_coeff", 1e-3)
+
+            lb_loss, z_loss = compute_router_loss(self)
+
+            aux_loss = lb_coeff * lb_loss + z_coeff * z_loss
+            loss = loss + aux_loss
+
+            loss_dict["router_balance_loss"] = lb_loss.item()
+            loss_dict["router_z_loss"] = z_loss.item()
+            loss_dict["moe_aux_loss"] = aux_loss.item()
 
         return loss, loss_dict
 
