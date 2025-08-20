@@ -88,11 +88,6 @@ def update_policy(
             aux_loss = lb_coeff * bal_loss + z_coeff * z_loss
             loss = loss + aux_loss
 
-            # Clear cached router statistics to avoid stale tensors accumulating
-            for m in policy.modules():
-                if hasattr(m, "_clear_cache"):
-                    m._clear_cache()
-
             # Logging
             output_dict = output_dict or {}
             output_dict["router_balance_loss"] = bal_loss.item()
@@ -145,6 +140,11 @@ def update_policy(
         # To possibly update an internal buffer (for instance an Exponential Moving Average like in TDMPC).
         policy.update()
 
+    # Clear cached router statistics to avoid stale tensors accumulating
+    for m in policy.modules():
+        if hasattr(m, "_clear_cache"):
+            m._clear_cache()
+
     train_metrics.loss = loss.item()
     train_metrics.grad_norm = grad_norm.item()
     train_metrics.param_norm = param_norm
@@ -184,8 +184,8 @@ def train(cfg: TrainPipelineConfig):
     # ---------------------------------------------------------
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
-    cfg.lora_moe_cfg = {"r":128,"alpha":256,"routing":"top1"}
-    cfg.gradient_checkpointing = True
+    # cfg.lora_moe_cfg = {"r":128,"alpha":256,"routing":"top1"}
+    # cfg.gradient_checkpointing = False
 
     # ---------------------------------------------------------
     # distributed mode flags
@@ -301,10 +301,10 @@ def train(cfg: TrainPipelineConfig):
         if is_ddp_master(is_distributed, local_rank):
             logging.info("Using Vanilla Pi0")
 
-    # if cfg.use_pretrained_lora:
-    #     assert cfg.use_lora_moe or cfg.use_qlora_moe
-    #     for expert_id, adapter_file in enumerate(cfg.adapter_file_paths):
-    #         missing_keys, unexpexted_keys = load_adapters_as_expert(policy, adapter_file, expert_id, device=device)
+    if cfg.use_pretrained_lora:
+        assert cfg.use_lora_moe or cfg.use_qlora_moe
+        for expert_id, adapter_file in enumerate(cfg.adapter_file_paths):
+            missing_keys, unexpexted_keys = load_adapters_as_expert(policy, adapter_file, expert_id, device=device)
 
     # Utilities to normalize dtypes across the model prior to FSDP wrapping
     def _force_cast_all_float_parameters(module: torch.nn.Module, target_dtype: torch.dtype):
@@ -437,7 +437,7 @@ def train(cfg: TrainPipelineConfig):
         logging.info("Start offline training on a fixed dataset")
 
     if cfg.gradient_checkpointing:
-        assert not (cfg.use_lora_moe or cfg.use_qlora_moe)
+        # assert not (cfg.use_lora_moe or cfg.use_qlora_moe)
         policy_m.supports_gradient_checkpointing = True
         policy_m.gradient_checkpointing_enable()
 

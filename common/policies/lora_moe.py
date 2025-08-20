@@ -70,10 +70,9 @@ class MoELoRALinear(nn.Module):
         nn.init.zeros_(self.B)
 
         # Router (token‑wise gating)
-        self.track_router_stats = False
+        self.track_router_stats = True
         self.router = nn.Linear(in_f, cfg.num_experts, bias=False, dtype=base.weight.dtype)
-        with torch.no_grad():
-            self.router.weight.data.zero_()
+        nn.init.kaiming_uniform_(self.router.weight, a=math.sqrt(5))
 
         self.dropout = nn.Dropout(cfg.dropout) if cfg.dropout > 0.0 else nn.Identity()
 
@@ -91,7 +90,7 @@ class MoELoRALinear(nn.Module):
     def weight(self):  # type: ignore
         return self.base.weight
 
-    def _fill_cache(self, logits: torch.Tensor, gates: torch.Tensor, detach:bool = False):
+    def _fill_cache(self, logits: torch.Tensor, gates: torch.Tensor, detach: bool = False):
         """DDP/ckpt 안전하게 저장: graph와 분리된 텐서만 보관."""
         if detach:
             self._last_router_logits = logits.detach().float()

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Tuple
 
 from common.policies.lora_moe import MoELoRALinear
@@ -22,10 +23,10 @@ def router_balance_loss(
             p = gates.mean(dim=tuple(range(gates.dim() - 1)))     # (E,)
 
             # f_j : 실제 토큰 분포 (hard one‑hot)
-            hard = torch.nn.functional.one_hot(gates.argmax(-1), E)
+            hard = F.one_hot(gates.argmax(-1), E)
             f = hard.float().mean(dim=tuple(range(hard.dim() - 1)))
 
-            loss = (f * p).sum() * E                            # N·(f·p)
+            loss = (f * p).sum() * E                           # N·(f·p)
             losses.append(loss)
             # Do not clear cache here; trainer will handle after all aux losses are computed.
 
