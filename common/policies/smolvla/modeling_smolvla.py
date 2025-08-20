@@ -365,6 +365,8 @@ class SmolVLAPolicy(PreTrainedPolicy):
         model_file: str,
         map_location: str,
         strict: bool,
+        model_is_safetensor: bool | None = None,  # ✅ 추가
+        **kwargs,
     ):
         safetensors.torch.load_model(model, model_file, strict=strict, device=map_location)
         return load_smolvla(

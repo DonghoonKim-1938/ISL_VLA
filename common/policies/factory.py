@@ -27,6 +27,7 @@ from common.policies.diffusion.configuration_diffusion import DiffusionConfig
 from common.policies.pi0.configuration_pi0 import PI0Config
 from common.policies.pi0fast.configuration_pi0fast import PI0FASTConfig
 from common.policies.pretrained import PreTrainedPolicy
+from common.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from common.policies.tdmpc.configuration_tdmpc import TDMPCConfig
 from common.policies.vqbet.configuration_vqbet import VQBeTConfig
 from common.policies.smolvla.configuration_smolvla import SmolVLAConfig

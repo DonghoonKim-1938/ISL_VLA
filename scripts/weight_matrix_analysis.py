@@ -44,7 +44,15 @@ def load_weights(path: str | Path, device: str = "cpu") -> Dict[str, torch.Tenso
         print(f"→ {path.name} 파일을 사용합니다.")
     if not path.is_file():
         raise FileNotFoundError(f"{path} 파일이 존재하지 않습니다.")
-    return load_safetensor(str(path), device=device)
+    original_tensors = load_safetensor(str(path), device=device)
+
+    # 키에서 '._orig_mod.' 접두사를 제거하여 새로운 딕셔너리 생성
+    normalized_tensors = {
+        key.replace("._orig_mod.", "."): value
+        for key, value in original_tensors.items()
+    }
+
+    return normalized_tensors
 
 
 def filter_linear_weights(tensors: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -212,7 +220,8 @@ def main():
 
                 plt.legend()
                 plt.tight_layout()
-                out_path = Path(f"svd_{thr_label}p_ratio_{cat}.png")
+                # out_path = Path(f"svd_{thr_label}p_ratio_{cat}.png")
+                out_path = Path(f"/home/ghkim/result/{args.name}/svd_{thr_label}p_ratio_{cat}.png")
                 plt.savefig(out_path, dpi=150)
                 print(f"Plot saved to {out_path.resolve()}")
 

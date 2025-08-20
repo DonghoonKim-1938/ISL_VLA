@@ -21,6 +21,8 @@ from common.optim.schedulers import (
     CosineDecayWithWarmupSchedulerConfig,
 )
 
+from transformers import PretrainedConfig
+
 
 @PreTrainedConfig.register_subclass("smolvla")
 @dataclass
@@ -65,10 +67,11 @@ class SmolVLAConfig(PreTrainedConfig):
 
     # Attention utils
     use_cache: bool = True
+    attention_implementation: str = "eager"
 
     # Finetuning settings
     freeze_vision_encoder: bool = True
-    train_expert_only: bool = True
+    train_expert_only: bool = False
     train_state_proj: bool = True
 
     # Training presets
@@ -104,6 +107,8 @@ class SmolVLAConfig(PreTrainedConfig):
 
     def __post_init__(self):
         super().__post_init__()
+
+        self._attn_implementation_internal = self.attention_implementation
 
         """Input validation (not exhaustive)."""
         if self.n_action_steps > self.chunk_size:
