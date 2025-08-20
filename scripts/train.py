@@ -37,7 +37,7 @@ from common.utils.train_utils import (
     save_training_state,
 )
 from common.utils.model_utils import compute_param_norm, compute_grad_norm, freeze_non_adapters
-from common.policies.moe_utils import moe_aux_loss
+from common.policies.moe_utils import router_balance_loss, router_z_loss
 from common.utils.utils import (
     format_big_number,
     get_safe_torch_device,
@@ -78,13 +78,25 @@ def update_policy(
 
         # Auxiliary MoE losses (balance + z-loss)
         if moe_aux_cfg is not None:
-            aux_loss = moe_aux_loss(
-                policy,
-                lb_coeff=moe_aux_cfg.get("lb_coeff", 0.01),
-                z_coeff=moe_aux_cfg.get("z_coeff", 1e-3),
-            )
+            # Compute raw (unscaled) auxiliary losses
+            lb_coeff = moe_aux_cfg.get("lb_coeff", 0.01)
+            z_coeff = moe_aux_cfg.get("z_coeff", 1e-3)
+
+            bal_loss, _ = router_balance_loss(policy)
+            z_loss, _ = router_z_loss(policy)
+
+            aux_loss = lb_coeff * bal_loss + z_coeff * z_loss
             loss = loss + aux_loss
+
+            # Clear cached router statistics to avoid stale tensors accumulating
+            for m in policy.modules():
+                if hasattr(m, "_clear_cache"):
+                    m._clear_cache()
+
+            # Logging
             output_dict = output_dict or {}
+            output_dict["router_balance_loss"] = bal_loss.item()
+            output_dict["router_z_loss"] = z_loss.item()
             output_dict["moe_aux_loss"] = aux_loss.item()
         # TODO(rcadene): policy.unnormalize_outputs(out_dict)
     grad_scaler.scale(loss).backward()

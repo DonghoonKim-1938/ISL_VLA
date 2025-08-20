@@ -7,8 +7,6 @@ from common.policies.lora_moe import MoELoRALinear
 # ---------- ① Load‑Balancing Loss (Switch 스타일) ----------
 def router_balance_loss(
     model: nn.Module,
-    *,
-    coeff: float = 0.01,
 ) -> Tuple[torch.Tensor, int]:
     """Switch‑style load‑balancing loss = N · (f·p)."""
     losses = []
@@ -29,20 +27,18 @@ def router_balance_loss(
 
             loss = (f * p).sum() * E                            # N·(f·p)
             losses.append(loss)
-            module._clear_cache()
+            # Do not clear cache here; trainer will handle after all aux losses are computed.
 
     if not losses:
         device = next(model.parameters()).device
         return torch.tensor(0.0, device=device), 0
 
-    return coeff * torch.stack(losses).mean(), len(losses)
+    return torch.stack(losses).mean(), len(losses)
 
 
 # ---------- ② Router Z‑Loss ----------
 def router_z_loss(
     model: nn.Module,
-    *,
-    coeff: float = 1e-3,
 ) -> Tuple[torch.Tensor, int]:
     r"""Penalize large log‑sum‑exp of router logits for numerical stability.
 
@@ -63,22 +59,10 @@ def router_z_loss(
             z = torch.logsumexp(logits, dim=-1)                # (...)
             loss = (z ** 2).mean()
             losses.append(loss)
-            module._clear_cache()
+            # Cache clearing deferred to caller
 
     if not losses:
         device = next(model.parameters()).device
         return torch.tensor(0.0, device=device), 0
 
-    return coeff * torch.stack(losses).mean(), len(losses)
-
-
-# ---------- ③ 두 보조 손실을 합치는 헬퍼 ----------
-def moe_aux_loss(
-    model: nn.Module,
-    *,
-    lb_coeff: float = 0.01,
-    z_coeff: float = 1e-3,
-) -> torch.Tensor:
-    lb_loss, _ = router_balance_loss(model, coeff=lb_coeff)
-    z_loss, _  = router_z_loss(model,      coeff=z_coeff)
-    return lb_loss + z_loss
+    return torch.stack(losses).mean(), len(losses)
