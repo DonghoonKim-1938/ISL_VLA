@@ -425,6 +425,7 @@ def train(cfg: TrainPipelineConfig):
         logging.info("Start offline training on a fixed dataset")
 
     if cfg.gradient_checkpointing:
+        assert not (cfg.use_lora_moe or cfg.use_qlora_moe)
         policy_m.supports_gradient_checkpointing = True
         policy_m.gradient_checkpointing_enable()
 

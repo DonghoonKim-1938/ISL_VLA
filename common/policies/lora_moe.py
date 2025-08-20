@@ -70,7 +70,7 @@ class MoELoRALinear(nn.Module):
         nn.init.zeros_(self.B)
 
         # Router (token‑wise gating)
-        self.track_router_stats = True
+        self.track_router_stats = False
         self.router = nn.Linear(in_f, cfg.num_experts, bias=False, dtype=base.weight.dtype)
         with torch.no_grad():
             self.router.weight.data.zero_()
@@ -91,13 +91,18 @@ class MoELoRALinear(nn.Module):
     def weight(self):  # type: ignore
         return self.base.weight
 
-    def _detach_cache(self, logits: torch.Tensor, gates: torch.Tensor):
+    def _fill_cache(self, logits: torch.Tensor, gates: torch.Tensor, detach:bool = False):
         """DDP/ckpt 안전하게 저장: graph와 분리된 텐서만 보관."""
-        if not self.track_router_stats:
-            return
-        # 작은 텐서라면 float32로 복사해두면 수치적으로도 안전
-        self._last_router_logits = logits.detach().float()
-        self._last_gates = gates.detach().float()
+        if detach:
+            self._last_router_logits = logits.detach().float()
+            self._last_gates = gates.detach().float()
+        else:
+            self._last_router_logits = logits
+            self._last_gates = gates
+
+    def _clear_cache(self):
+        self._last_router_logits = None
+        self._last_gates = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore
         """Assumes input shape (..., in_features).  Router acts on last dim."""
@@ -108,7 +113,7 @@ class MoELoRALinear(nn.Module):
         router_logits = self.router(x_dp)  # (..., E)
         gates = torch.softmax(router_logits, dim=-1)  # (..., E)
 
-        self._detach_cache(router_logits, gates)
+        self._fill_cache(router_logits, gates, detach=self.track_router_stats)
 
         if self.cfg.routing == "top1":
             _, top_idx = torch.topk(gates, k=1, dim=-1)  # (..., 1)

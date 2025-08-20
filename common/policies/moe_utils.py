@@ -29,6 +29,7 @@ def router_balance_loss(
 
             loss = (f * p).sum() * E                            # N·(f·p)
             losses.append(loss)
+            module._clear_cache()
 
     if not losses:
         device = next(model.parameters()).device
@@ -62,6 +63,7 @@ def router_z_loss(
             z = torch.logsumexp(logits, dim=-1)                # (...)
             loss = (z ** 2).mean()
             losses.append(loss)
+            module._clear_cache()
 
     if not losses:
         device = next(model.parameters()).device
