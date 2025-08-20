@@ -17,8 +17,8 @@ import bitsandbytes as bnb
 
 @dataclass
 class QLoRAConfig:
-    r: int = 8  # low-rank dimension
-    alpha: int = 16  # scaling factor
+    r: int = 64  # low-rank dimension
+    alpha: int = 128  # scaling factor
     dropout: float = 0.05  # dropout on input features
     fan_in_fan_out: bool = False  # set True if base weight is transposed
 

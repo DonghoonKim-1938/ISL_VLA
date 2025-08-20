@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # GPU 목록 (쉼표로 구분)
-DEVICES=0,1
+DEVICES=4,5,6,7
 
 # 환경 변수 -------------------------------------------------------------
 export PYTHONPATH=$(pwd)
@@ -18,22 +18,22 @@ DATA_ROOT_DIR="piper_multitask"
 # ----------------------------------------------------------------------
 CUDA_VISIBLE_DEVICES=${DEVICES} \
   torchrun \
-    --master-port=29400 \
-    --nproc_per_node=2 \
+    --master-port=29350 \
+    --nproc_per_node=4 \
     scripts/train.py \
-    --policy.path=/ckpt/pi0 \
+    --policy.path=/ssd2/ckpt/pi0 \
     --dist_mode=fsdp \
     --lora_cfg='{"r":32,"alpha":64}' \
     --target_keywords='["all-linear"]' \
-    --train_dataset.repo_id="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
-    --train_dataset.root="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
-    --test_dataset.repo_id="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
-    --test_dataset.root="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
+    --train_dataset.repo_id="/ssd2/data/piper/${DATA_ROOT_DIR}" \
+    --train_dataset.root="/ssd2/data/piper/${DATA_ROOT_DIR}" \
+    --test_dataset.repo_id="/ssd2/data/piper/${DATA_ROOT_DIR}" \
+    --test_dataset.root="/ssd2/data/piper/${DATA_ROOT_DIR}" \
     --wandb.project=ISL_VLA \
     --wandb.enable=false \
     --wandb.disable_artifact=true \
-    --output_dir=/result/${BASELINE}_fullFT_multitask_fsdp \
-    --job_name=${BASELINE}_fullFT_multitask_fsdp \
+    --output_dir=/ssd2/result/pi0_test \
+    --job_name="pi0_test" \
     --batch_size=1 \
     --num_workers=1 \
     --log_freq=1 \
