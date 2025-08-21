@@ -444,20 +444,31 @@ class PI0Policy(PreTrainedPolicy):
         loss_dict["l2_loss"] = loss.item()
 
         if moe_aux_cfg is not None:
-            # Compute raw (unscaled) auxiliary losses
-            lb_coeff = moe_aux_cfg.get("lb_coeff", 0.01)
-            z_coeff = moe_aux_cfg.get("z_coeff", 1e-3)
+            aux_loss, loss_dict = self._router_forward(moe_aux_cfg, loss_dict)
+        else:
+            aux_loss = torch.tensor(0.0, device=loss.device, dtype=loss.dtype)
 
-            lb_loss, z_loss = compute_router_loss(self)
+        total_loss = loss+aux_loss
 
-            aux_loss = lb_coeff * lb_loss + z_coeff * z_loss
-            loss = loss + aux_loss
+        return total_loss, loss_dict
 
-            loss_dict["router_balance_loss"] = lb_loss.item()
-            loss_dict["router_z_loss"] = z_loss.item()
-            loss_dict["moe_aux_loss"] = aux_loss.item()
+    def _router_forward(
+            self,
+            moe_aux_cfg: dict,
+            loss_dict: dict
+    ):
+        lb_coeff = moe_aux_cfg.get("lb_coeff", 0.01)
+        z_coeff = moe_aux_cfg.get("z_coeff", 1e-3)
 
-        return loss, loss_dict
+        lb_loss, z_loss = compute_router_loss(self)
+
+        aux_loss = lb_coeff * lb_loss + z_coeff * z_loss
+
+        loss_dict["router_balance_loss"] = lb_loss.item()
+        loss_dict["router_z_loss"] = z_loss.item()
+        loss_dict["moe_aux_loss"] = aux_loss.item()
+
+        return aux_loss, loss_dict
 
     def prepare_images(self, batch):
         """Apply Pi0 preprocessing to the images, like resizing to 224x224 and padding to keep aspect ratio, and
