@@ -15,7 +15,7 @@ import datetime as dt
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Type, Any
+from typing import Type, Any, List
 
 import draccus
 from huggingface_hub import hf_hub_download
@@ -39,6 +39,7 @@ class TrainPipelineConfig(HubMixin):
     dataset: DatasetConfig | None = None
     env: envs.EnvConfig | None = None
     policy: PreTrainedConfig | None = None
+    adapter_file_paths: str | Path | List[str | Path] | None = None
     # Set `dir` to where you would like to save all of the run outputs. If you run another training session
     # with the same value for `dir` its contents will be overwritten unless you set `resume` to true.
     output_dir: Path | None = None
@@ -143,6 +144,10 @@ class TrainPipelineConfig(HubMixin):
         valid_modes = ("ddp", "fsdp", "none", None)
         if self.dist_mode not in valid_modes:
             raise ValueError(f"dist_mode must be one of {valid_modes}, got {self.dist_mode}")
+
+        if self.adapter_file_paths:
+            if not isinstance(self.adapter_file_paths, list):
+                self.adapter_file_paths = [self.adapter_file_paths]
 
     @classmethod
     def __get_path_fields__(cls) -> list[str]:

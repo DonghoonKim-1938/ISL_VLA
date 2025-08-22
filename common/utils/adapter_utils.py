@@ -84,8 +84,8 @@ def load_adapters_as_expert(
         if isinstance(module, MoELoRALinear):
             # Expected keys in LoRA adapter (e.g., from PEFT): 'lora_A.weight', 'lora_B.weight'
             # Match shape to MoE expert slot
-            A_key = f"{name}.lora_A.weight"
-            B_key = f"{name}.lora_B.weight"
+            A_key = f"{name}.A"
+            B_key = f"{name}.B"
 
             found = True
             if A_key not in state:
@@ -100,25 +100,25 @@ def load_adapters_as_expert(
                     module.A[expert_id].copy_(state[A_key])
                     module.B[expert_id].copy_(state[B_key])
                 replaced += 1
-                print(f"[OK] Loaded LoRA expert for {name} into expert {expert_id}")
 
                 # Freeze expert weights
                 module.A.requires_grad_(False)
                 module.B.requires_grad_(False)
                 module.router.requires_grad_(True)
 
-        # unexpected_keys = state.keys() - actually used keys
-        used_keys = {f"{name}.lora_A.weight" for name, m in model.named_modules() if isinstance(m, MoELoRALinear)} | \
-                    {f"{name}.lora_B.weight" for name, m in model.named_modules() if isinstance(m, MoELoRALinear)}
-        unexpected_keys = [k for k in state.keys() if k not in used_keys]
+    # unexpected_keys = state.keys() - actually used keys
+    used_keys = {f"{name}.A" for name, m in model.named_modules() if isinstance(m, MoELoRALinear)} | \
+                {f"{name}.B" for name, m in model.named_modules() if isinstance(m, MoELoRALinear)}
+    unexpected_keys = [k for k in state.keys() if k not in used_keys]
 
-        if missing_keys:
-            print(f"[WARN] Missing keys: {missing_keys}")
-        if unexpected_keys:
-            print(f"[WARN] Unexpected keys: {unexpected_keys}")
-        if replaced == 0:
-            print("[WARN] No matching LoRA modules found in state_dict!")
-        else:
-            print(f"[INFO] Successfully injected LoRA into {replaced} MoELoRALinear layers.")
+    if missing_keys:
+        print(f"[WARN] Missing keys: {missing_keys}")
+    if unexpected_keys:
+        print(f"[WARN] Unexpected keys: {unexpected_keys}")
 
-        return missing_keys, unexpected_keys
+    if replaced == 0:
+        raise Exception("No matching LoRA modules found in state_dict!")
+    else:
+        res = f"[INFO] Successfully injected LoRA into {replaced} MoELoRALinear layers."
+
+    return missing_keys, unexpected_keys, res

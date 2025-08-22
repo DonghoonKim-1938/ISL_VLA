@@ -10,8 +10,8 @@ import bitsandbytes as bnb
 import gc
 
 # LoRA / Prefix / LoRA-MoE injection utilities
-from common.policies.qlora import inject_qlora, QLoRAConfig as InjectQLoRAConfig
-from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
+from common.policies.qlora import inject_qlora, QLoRAConfig
+from common.policies.lora import inject_lora, LoRAConfig
 from common.policies.prefix_tuning import inject_prefix_tuning, PrefixTuningConfig
 from common.policies.lora_moe import inject_lora_moe, LoRAMoEConfig
 from common.policies.qlora_moe import inject_qlora_moe, QLoRAMoEConfig
@@ -165,8 +165,14 @@ def train(cfg: TrainPipelineConfig):
     # ---------------------------------------------------------
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
-    # cfg.lora_moe_cfg = {"r":128,"alpha":256,"routing":"top1"}
-    # cfg.gradient_checkpointing = False
+    cfg.lora_moe_cfg = {'r':128, 'alpha': 256, 'routing': 'top1'}
+    cfg.use_pretrained_lora = True
+    cfg.adapter_file_paths = [
+        '/result/pi0_lora_r128_all-linear_openthepot/020000/pretrained_model/adapters.safetensors',
+        '/result/pi0_lora_r128_all-linear_pickplace/030000/pretrained_model/adapters.safetensors',
+        '/result/pi0_lora_r128_all-linear_pourtheblock/030000/pretrained_model/adapters.safetensors',
+        '/result/pi0_lora_r128_all-linear_pressthebutton/030000/pretrained_model/adapters.safetensors'
+    ]
 
     # ---------------------------------------------------------
     # distributed mode flags
@@ -235,7 +241,7 @@ def train(cfg: TrainPipelineConfig):
             logging.info("Unfreezed action output projection")
 
     elif getattr(cfg, "use_qlora", False):
-        qlora_cfg_obj = InjectQLoRAConfig(**(cfg.qlora_cfg or {})) if hasattr(cfg, "qlora_cfg") else InjectQLoRAConfig()
+        qlora_cfg_obj = QLoRAConfig(**(cfg.qlora_cfg or {})) if hasattr(cfg, "qlora_cfg") else InjectQLoRAConfig()
         policy, _ = inject_qlora(policy, qlora_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
         freeze_non_adapters(policy)
@@ -244,7 +250,7 @@ def train(cfg: TrainPipelineConfig):
 
     elif getattr(cfg, "use_lora", False):
         # Standard LoRA (rank=8 by default)
-        lora_cfg_obj = InjectLoRAConfig(**(cfg.lora_cfg or {})) if hasattr(cfg, "lora_cfg") else InjectLoRAConfig()
+        lora_cfg_obj = LoRAConfig(**(cfg.lora_cfg or {})) if hasattr(cfg, "lora_cfg") else InjectLoRAConfig()
         policy, _ = inject_lora(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
         policy = policy.to(device=device)
         freeze_non_adapters(policy)
@@ -283,9 +289,18 @@ def train(cfg: TrainPipelineConfig):
             logging.info("Using Vanilla Pi0")
 
     if cfg.use_pretrained_lora:
-        assert cfg.use_lora_moe or cfg.use_qlora_moe
+        if cfg.use_lora_moe:
+            moe_cfg_obj = lora_moe_cfg_obj
+        elif cfg.use_qlora_moe:
+            moe_cfg_obj = qlora_cfg_obj
+        else:
+            raise ValueError("Must use MoE when using pretrained lora modules")
+        assert len(cfg.adapter_file_paths) == moe_cfg_obj.num_experts, "Adapter files must match number of experts"
+
         for expert_id, adapter_file in enumerate(cfg.adapter_file_paths):
-            missing_keys, unexpexted_keys = load_adapters_as_expert(policy, adapter_file, expert_id, device=device)
+            missing_keys, unexpexted_keys, res = load_adapters_as_expert(policy, adapter_file, expert_id, device=device)
+            if is_ddp_master(is_distributed, local_rank):
+                logging.info(res)
 
     # Utilities to normalize dtypes across the model prior to FSDP wrapping
     def _force_cast_all_float_parameters(module: torch.nn.Module, target_dtype: torch.dtype):

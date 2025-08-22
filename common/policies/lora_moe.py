@@ -85,7 +85,6 @@ class MoELoRALinear(nn.Module):
     # ---------------------------------------------------------
     # Expose base weight param
     # ---------------------------------------------------------
-
     @property
     def weight(self):  # type: ignore
         return self.base.weight
@@ -117,6 +116,12 @@ class MoELoRALinear(nn.Module):
 
         self._fill_cache(router_logits, gates, detach=self.track_router_stats)
 
+        gates = self._mask_gates(gates)
+        lora_mix = self._compute_lora_mix(x_dp, gates)
+
+        return base_out + lora_mix
+
+    def _mask_gates(self, gates: torch.Tensor)-> torch.Tensor:
         if self.cfg.routing == "top1":
             _, top_idx = torch.topk(gates, k=1, dim=-1)  # (..., 1)
             mask = torch.zeros_like(gates).scatter_(-1, top_idx, 1.0)
@@ -127,31 +132,31 @@ class MoELoRALinear(nn.Module):
             mask = torch.zeros_like(gates).scatter_(-1, top_idx, top_vals)
             gates = mask / (mask.sum(dim=-1, keepdim=True) + 1e-9)
 
-        else:
-            pass
+        return gates
 
+    def _compute_lora_mix(self, x: torch.Tensor, gates: torch.Tensor) -> torch.Tensor:
         # Flatten leading dims for batched matmul
-        leading_shape = x_dp.shape[:-1]              # (...)
+        leading_shape = x.shape[:-1]  # (...)
         in_f = self.base.in_features
 
-        A_t = self.A.transpose(-1, 1)           # (E, in, r)
-        B_t = self.B.transpose(-1, 1)           # (E, r, out)
+        A_t = self.A.transpose(-1, 1)  # (E, in, r)
+        B_t = self.B.transpose(-1, 1)  # (E, r, out)
 
         # (N, 1, in) × (E, in, r) -> (N, E, r)
-        proj_r = torch.matmul(x_dp.unsqueeze(1), A_t.unsqueeze(0))   # (B, E, S, r)
+        proj_r = torch.matmul(x.unsqueeze(1), A_t.unsqueeze(0))  # (B, E, S, r)
 
         # (N, E, r) × (E, r, out) -> (N, E, out)
-        lora_out = torch.matmul(proj_r, B_t.unsqueeze(0))   # (B, E, S, out)
+        lora_out = torch.matmul(proj_r, B_t.unsqueeze(0))  # (B, E, S, out)
 
         # Restore leading shape
         out_f = self.base.out_features
-        lora_out = lora_out.transpose(1,2).reshape(*leading_shape, self.cfg.num_experts, out_f)
+        lora_out = lora_out.transpose(1, 2).reshape(*leading_shape, self.cfg.num_experts, out_f)
 
         # Weighted sum over experts without einsum: (..., E, out)
         weighted = (gates * self.cfg.scale).unsqueeze(-1) * lora_out  # (..., E, out)
-        lora_mix = weighted.sum(dim=-2)                                # (..., out)
-        
-        return base_out + lora_mix
+        lora_mix = weighted.sum(dim=-2)
+
+        return lora_mix
 
 
 def inject_lora_moe(
