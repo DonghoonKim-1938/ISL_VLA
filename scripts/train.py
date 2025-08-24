@@ -190,7 +190,7 @@ def train(cfg: TrainPipelineConfig):
             device, local_rank = torch.device("cuda"), 0  # single GPU
 
         if not dist.is_initialized():
-            dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=30))
+            dist.init_process_group(backend="gloo", timeout=datetime.timedelta(minutes=5))
         local_rank = dist.get_rank()
         device = torch.device("cuda", local_rank)
         torch.cuda.set_device(device)  # needed!
@@ -292,13 +292,15 @@ def train(cfg: TrainPipelineConfig):
         if cfg.use_lora_moe:
             moe_cfg_obj = lora_moe_cfg_obj
         elif cfg.use_qlora_moe:
-            moe_cfg_obj = qlora_cfg_obj
+            moe_cfg_obj = qlora_moe_cfg_obj
+        elif cfg.use_ada_lora_moe:
+            moe_cfg_obj = ada_lora_moe_cfg_obj
         else:
             raise ValueError("Must use MoE when using pretrained lora modules")
         assert len(cfg.adapter_file_paths) == moe_cfg_obj.num_experts, "Adapter files must match number of experts"
 
         for expert_id, adapter_file in enumerate(cfg.adapter_file_paths):
-            missing_keys, unexpexted_keys, res = load_adapters_as_expert(policy, adapter_file, expert_id, device=device)
+            missing_keys, unexpexted_keys, res = load_adapters_as_expert(policy, adapter_file, expert_id, train_experts=True, device=device)
             if is_ddp_master(is_distributed, local_rank):
                 logging.info(res)
 

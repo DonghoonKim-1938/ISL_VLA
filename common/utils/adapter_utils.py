@@ -62,8 +62,9 @@ def load_adapters_as_expert(
         model: nn.Module,
         adapters_file: str | Path,
         expert_id: int,
+        train_experts: bool = False,
         device: str | torch.device = "cpu",
-) -> Tuple[list[str], list[str]]:
+) -> Tuple[list[str], list[str], str]:
     """
     Load a pretrained LoRA adapter (saved as state_dict) into an existing MoE-LoRA model
     by inserting it as one expert (expert_id).
@@ -72,6 +73,8 @@ def load_adapters_as_expert(
         model (nn.Module): Model with injected MoELoRALinear modules.
         adapters_file (str | Path): Path to LoRA adapter weights (.pt or .bin).
         expert_id (int): Index of expert slot to overwrite with LoRA adapter.
+        train_experts (bool): Whether to train expert slots.
+        device (str): Device to use.
     """
     # Load pretrained LoRA adapter state
     state = sft.load_file(str(adapters_file), device=str(device))
@@ -97,13 +100,17 @@ def load_adapters_as_expert(
 
             if found:
                 with torch.no_grad():
-                    module.A[expert_id].copy_(state[A_key])
-                    module.B[expert_id].copy_(state[B_key])
+                    if adapter_is_concat:
+                        module.A[expert_id].copy_(state[A_key])
+                        module.B[expert_id].copy_(state[B_key])
+                    else:
+                        module.A[expert_id].copy_(state[A_key])
+                        module.B[expert_id].copy_(state[B_key])
                 replaced += 1
 
                 # Freeze expert weights
-                module.A.requires_grad_(False)
-                module.B.requires_grad_(False)
+                module.A.requires_grad_(train_experts)
+                module.B.requires_grad_(train_experts)
                 module.router.requires_grad_(True)
 
     # unexpected_keys = state.keys() - actually used keys
