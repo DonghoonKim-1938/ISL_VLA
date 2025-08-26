@@ -3,18 +3,11 @@ import time
 import os
 import datetime
 from contextlib import nullcontext
-from pathlib import PosixPath
 from pprint import pformat
 from typing import Any
-import bitsandbytes as bnb
 import gc
 
 # LoRA / Prefix / LoRA-MoE injection utilities
-from common.policies.qlora import inject_qlora, QLoRAConfig
-from common.policies.lora import inject_lora, LoRAConfig
-from common.policies.prefix_tuning import inject_prefix_tuning, PrefixTuningConfig
-from common.policies.lora_moe import inject_lora_moe, LoRAMoEConfig
-from common.policies.qlora_moe import inject_qlora_moe, QLoRAMoEConfig
 
 import torch
 from termcolor import colored
@@ -26,6 +19,8 @@ from torch.optim import Optimizer
 import torch.distributed as dist
 
 from common.datasets.make_dataloader import make_dataloader
+from common.policies.lora import LoraConfig
+from common.policies.lora_msp import LoraMSPConfig
 from common.utils.train_utils import batch_to_device
 from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker
 from common.utils.random_utils import set_seed
@@ -36,8 +31,7 @@ from common.utils.train_utils import (
     update_last_checkpoint,
     save_training_state,
 )
-from common.utils.model_utils import compute_param_norm, compute_grad_norm, freeze_non_adapters
-from common.policies.moe_utils import compute_router_loss
+from common.utils.model_utils import compute_param_norm
 from common.utils.utils import (
     format_big_number,
     get_safe_torch_device,
@@ -46,11 +40,11 @@ from common.utils.utils import (
     is_ddp_master
 )
 # adapter utils
-from common.utils.adapter_utils import save_adapters, load_adapters_as_expert
+from common.utils.adapter_utils import save_adapters
 from common.utils.wandb_utils import WandBLogger
 from configs import parser
 from configs.train import TrainPipelineConfig
-from common.policies.factory import make_policy
+from common.policies.factory import make_policy, wrap_policy, dist_policy
 from common.policies.pretrained import PreTrainedPolicy
 from common.policies.utils import get_device_from_parameters
 from common.datasets.factory import make_dataset
@@ -165,14 +159,20 @@ def train(cfg: TrainPipelineConfig):
     # ---------------------------------------------------------
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
-    cfg.lora_moe_cfg = {'r':128, 'alpha': 256, 'routing': 'top1'}
-    cfg.use_pretrained_lora = True
-    cfg.adapter_file_paths = [
+    cfg.method.lora_cfg = LoraMSPConfig(
+        r=128,
+        alpha=256,
+        quantize=True
+    )
+    cfg.method.target_keywords = ["all-linear"]
+    cfg.method.core = "lora_msp"
+    cfg.method.adapter_file_path = [
         '/result/pi0_lora_r128_all-linear_openthepot/020000/pretrained_model/adapters.safetensors',
         '/result/pi0_lora_r128_all-linear_pickplace/030000/pretrained_model/adapters.safetensors',
         '/result/pi0_lora_r128_all-linear_pourtheblock/030000/pretrained_model/adapters.safetensors',
         '/result/pi0_lora_r128_all-linear_pressthebutton/030000/pretrained_model/adapters.safetensors'
     ]
+    cfg.gradient_checkpointing = True
 
     # ---------------------------------------------------------
     # distributed mode flags
@@ -226,124 +226,24 @@ def train(cfg: TrainPipelineConfig):
         ds_meta = train_dataset.meta,
     )
 
-    # Adapter tuning options -------------------------------------------------
-    use_adapter = any([getattr(cfg, "use_qlora", False), getattr(cfg, "use_lora", False), getattr(cfg, "use_prefix_tuning", False), getattr(cfg, "use_lora_moe", False)])
-    if getattr(cfg, "train_linear_only", False):
-        policy.unfreeze_linear_layers()
-        policy = policy.to(device=device)
-        if is_ddp_master(is_distributed, local_rank):
-            logging.info("Unfreezed Linear only")
+    policy, res = wrap_policy(
+        policy = policy,
+        cfg = cfg.method,
+        is_master = is_ddp_master(is_distributed, local_rank),
+        device = device,
+    )
+    if is_ddp_master(is_distributed, local_rank):
+        logging.info(res)
 
-    elif getattr(cfg, "use_lin_prob", False):
-        policy.unfreeze_action_out_proj()
-        policy = policy.to(device=device)
-        if is_ddp_master(is_distributed, local_rank):
-            logging.info("Unfreezed action output projection")
-
-    elif getattr(cfg, "use_qlora", False):
-        qlora_cfg_obj = QLoRAConfig(**(cfg.qlora_cfg or {})) if hasattr(cfg, "qlora_cfg") else InjectQLoRAConfig()
-        policy, _ = inject_qlora(policy, qlora_cfg_obj, target_keywords=cfg.target_keywords)
-        policy = policy.to(device=device)
-        freeze_non_adapters(policy)
-        if is_ddp_master(is_distributed, local_rank):
-            logging.info("Injected QLoRA modules")
-
-    elif getattr(cfg, "use_lora", False):
-        # Standard LoRA (rank=8 by default)
-        lora_cfg_obj = LoRAConfig(**(cfg.lora_cfg or {})) if hasattr(cfg, "lora_cfg") else InjectLoRAConfig()
-        policy, _ = inject_lora(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
-        policy = policy.to(device=device)
-        freeze_non_adapters(policy)
-        if is_ddp_master(is_distributed, local_rank):
-            logging.info("Injected LoRA modules")
-
-    elif getattr(cfg, "use_prefix_tuning", False):
-        # Prefix tuning (custom implementation)
-        pt_cfg_obj = PrefixTuningConfig(**(cfg.prefix_tuning_cfg or {}))
-        policy, _ = inject_prefix_tuning(policy, pt_cfg_obj, target_keywords=cfg.target_keywords)
-        policy = policy.to(device=device)
-        freeze_non_adapters(policy)
-        if is_ddp_master(is_distributed, local_rank):
-            logging.info("Injected Prefix-Tuning modules")
-
-    elif getattr(cfg, "use_lora_moe", False):
-        # Mixture-of-LoRA experts
-        lora_moe_cfg_obj = LoRAMoEConfig(**(cfg.lora_moe_cfg or {})) if hasattr(cfg, "lora_moe_cfg") else LoRAMoEConfig()
-        policy, _ = inject_lora_moe(policy, lora_moe_cfg_obj, target_keywords=cfg.target_keywords)
-        policy = policy.to(device=device)
-        freeze_non_adapters(policy)
-        if is_ddp_master(is_distributed, local_rank):
-            logging.info("Injected LoRA-MoE modules")
-
-    elif getattr(cfg, "use_qlora_moe", False):
-        # Mixture-of-QLoRA experts
-        qlora_moe_cfg_obj = QLoRAMoEConfig(**(cfg.qlora_moe_cfg or {})) if hasattr(cfg, "qlora_moe_cfg") else QLoRAMoEConfig()
-        policy, _ = inject_qlora_moe(policy, qlora_moe_cfg_obj, target_keywords=cfg.target_keywords)
-        policy = policy.to(device=device)
-        freeze_non_adapters(policy)
-        if is_ddp_master(is_distributed, local_rank):
-            logging.info("Injected QLoRA-MoE modules")
-
-    else:
-        if is_ddp_master(is_distributed, local_rank):
-            logging.info("Using Vanilla Pi0")
-
-    if cfg.use_pretrained_lora:
-        if cfg.use_lora_moe:
-            moe_cfg_obj = lora_moe_cfg_obj
-        elif cfg.use_qlora_moe:
-            moe_cfg_obj = qlora_moe_cfg_obj
-        elif cfg.use_ada_lora_moe:
-            moe_cfg_obj = ada_lora_moe_cfg_obj
-        else:
-            raise ValueError("Must use MoE when using pretrained lora modules")
-        assert len(cfg.adapter_file_paths) == moe_cfg_obj.num_experts, "Adapter files must match number of experts"
-
-        for expert_id, adapter_file in enumerate(cfg.adapter_file_paths):
-            missing_keys, unexpexted_keys, res = load_adapters_as_expert(policy, adapter_file, expert_id, train_experts=True, device=device)
-            if is_ddp_master(is_distributed, local_rank):
-                logging.info(res)
-
-    # Utilities to normalize dtypes across the model prior to FSDP wrapping
-    def _force_cast_all_float_parameters(module: torch.nn.Module, target_dtype: torch.dtype):
-        for _, param in module.named_parameters(recurse=True):
-            if isinstance(param.data, torch.Tensor) and param.data.is_floating_point() and param.data.dtype != target_dtype:
-                param.data = param.data.to(target_dtype)
-
-    if dist_mode == "ddp":
-        # Wrap with DDP
-        if dist.is_initialized() and dist.is_available():
-            policy = DDP(
-                policy,
-                device_ids=[local_rank],
-                output_device=device,
-                gradient_as_bucket_view=True,
-                find_unused_parameters=True,
-            )
-            policy_m = policy.module
-        logging.info(f"Wrapped DDP module for local rank {local_rank}")
-    elif dist_mode == "fsdp":
-        mp_policy = MixedPrecision(
-            param_dtype=torch.bfloat16,
-            reduce_dtype=torch.float32,
-            buffer_dtype=torch.bfloat16,
-        )
-
-        # Ensure all trainable parameters are bfloat16
-        _force_cast_all_float_parameters(policy, target_dtype=torch.bfloat16)
-
-        # Robust construction across torch versions: prefer use_orig_params, else fall back
-        policy = FSDP(
-                policy,
-                device_id=device,
-                mixed_precision=mp_policy,
-                use_orig_params=True,
-        )
-        policy = policy.to(device=device)
-        policy_m = policy  # FSDP exposes params directly
-        logging.info("Wrapped FSDP module")
-    else:
-        policy_m = policy
+    policy_m, res = dist_policy(
+        policy = policy,
+        dist_mode = dist_mode,
+        is_distributed = dist.is_initialized() and dist.is_available(),
+        local_rank = local_rank,
+        device = device,
+    )
+    if is_ddp_master(is_distributed, local_rank):
+        logging.info(res)
 
     if is_ddp_master(is_distributed, local_rank):
         logging.info("Creating optimizer and scheduler")
@@ -388,10 +288,10 @@ def train(cfg: TrainPipelineConfig):
 
     # Determine MoE balance coeff if needed
     moe_aux_cfg = None
-    if cfg.use_lora_moe or cfg.use_qlora_moe:
+    if cfg.method.use_moe:
         moe_aux_cfg = {
-            "lb_coeff": (cfg.lora_moe_cfg or cfg.qlora_moe_cfg or {}).get("lb_coeff", 0.01),
-            "z_coeff": (cfg.lora_moe_cfg or cfg.qlora_moe_cfg or {}).get("z_coeff", 1e-3),
+            "lb_coeff": getattr(cfg.method.lora_cfg,"lb_coeff", 0.01),
+            "z_coeff": getattr(cfg.method.lora_cfg, "z_coeff", 1e-3),
         }
 
     policy.train()

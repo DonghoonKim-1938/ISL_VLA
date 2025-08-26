@@ -15,8 +15,12 @@
 # limitations under the License.
 
 import logging
+from typing import Optional, Tuple, List
 
+import torch
 from torch import nn
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecision, StateDictType
 
 from common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from common.datasets.utils import dataset_to_policy_features
@@ -31,8 +35,15 @@ from common.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from common.policies.tdmpc.configuration_tdmpc import TDMPCConfig
 from common.policies.vqbet.configuration_vqbet import VQBeTConfig
 from common.policies.smolvla.configuration_smolvla import SmolVLAConfig
+from common.utils.adapter_utils import inject_adapters, load_adapters_as_expert
 from configs.policies import PreTrainedConfig
 from configs.types import FeatureType
+from common.policies.extensions import ExtendedConfig
+
+from common.policies.lora import LoraConfig
+from common.policies.lora_moe import LoraMoEConfig
+from common.policies.lora_msp import LoraMSPConfig
+from common.utils.model_utils import freeze_non_adapters
 
 
 def get_policy_class(name: str) -> PreTrainedPolicy:
@@ -93,7 +104,7 @@ def make_policy(
     cfg: PreTrainedConfig,
     ds_meta: LeRobotDatasetMetadata | None = None,
     env_cfg: EnvConfig | None = None
-) -> PreTrainedPolicy:
+) -> nn.Module:
     """Make an instance of a policy class.
 
     This function exists because (for now) we need to parse features from either a dataset or an environment
@@ -164,3 +175,143 @@ def make_policy(
     # policy = torch.compile(policy, mode="reduce-overhead")
 
     return policy
+
+def wrap_policy(
+    policy: PreTrainedPolicy,
+    cfg: ExtendedConfig,
+    is_master: bool = True,
+    device: str | torch.device = "cpu",
+) -> Tuple[nn.Module, List[str] | str]:
+    method = cfg.core
+    lora_cfg_obj = None
+    train_router_loss = False
+
+    if method == "train_linear_only":
+        policy.unfreeze_linear_layers()
+        policy = policy.to(device=device)
+        if is_master:
+            logging.info("Unfreezed Linear only")
+
+    elif method == "linear_probing":
+        policy.unfreeze_action_out_proj()
+        policy = policy.to(device=device)
+        if is_master:
+            logging.info("Unfreezed action output projection")
+
+    elif method == "lora":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_moe_cfg") else LoraConfig()
+        if is_master:
+            logging.info("Injected LoRA modules")
+
+    elif method == "qlora":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_moe_cfg") else LoraConfig()
+        lora_cfg_obj.quantize = True
+        if is_master:
+            logging.info("Injected QLoRA modules")
+
+    elif method == "lora_moe":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_moe_cfg") else LoraMoEConfig()
+        train_router_loss = True
+
+        if is_master:
+            logging.info("Injected LoRA-MoE modules")
+
+    elif method == "qlora_moe":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_moe_cfg") else LoraMoEConfig()
+        lora_cfg_obj.quantize = True
+        train_router_loss = True
+
+        if is_master:
+            logging.info("Injected QLoRA-MoE modules")
+
+    elif method =="lora_msp":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraMSPConfig()
+        lora_cfg_obj.quantize = True
+        train_router_loss = True
+
+        if is_master:
+            logging.info("Injected LoRA-MSP modules")
+
+    elif method == "vanilla":
+        if is_master:
+            logging.info("Using Vanilla model")
+
+    else:
+        raise NotImplementedError(f"{method} not implemented")
+
+    if lora_cfg_obj is not None:
+        policy, _ = inject_adapters(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
+        policy = policy.to(device=device)
+        freeze_non_adapters(policy)
+        policy.train_aux_loss = True
+
+    if cfg.adapter_file_path:
+        assert lora_cfg_obj.num_experts == len(cfg.adapter_file_path)
+        res = load_adapters_as_expert(policy, cfg.adapter_file_path)
+    else:
+        res = f"Not Injecting Adapters"
+
+    if train_router_loss:
+        policy.enable_router_loss()
+
+    return policy, res
+
+
+def dist_policy(
+    policy: nn.Module,
+    dist_mode: Optional[str] = None,
+    is_distributed: bool = False,
+    local_rank: int = 0,
+    device: str | torch.device = "cpu",
+) -> Tuple[nn.Module, str]:
+    if dist_mode == 'none':
+        res = f"Not Wrapped for torch.distributed"
+        return policy, res
+
+    elif dist_mode == "fsdp":
+        assert is_distributed
+
+        mp_policy = MixedPrecision(
+            param_dtype=torch.bfloat16,
+            reduce_dtype=torch.float32,
+            buffer_dtype=torch.bfloat16,
+        )
+
+        # Utilities to normalize dtypes across the model prior to FSDP wrapping
+        def _force_cast_all_float_parameters(module: torch.nn.Module, target_dtype: torch.dtype):
+            for _, param in module.named_parameters(recurse=True):
+                if isinstance(param.data,
+                              torch.Tensor) and param.data.is_floating_point() and param.data.dtype != target_dtype:
+                    param.data = param.data.to(target_dtype)
+
+        # Ensure all trainable parameters are bfloat16
+        _force_cast_all_float_parameters(policy, target_dtype=torch.bfloat16)
+
+        # Robust construction across torch versions: prefer use_orig_params, else fall back
+        policy = FSDP(
+            policy,
+            device_id=device,
+            mixed_precision=mp_policy,
+            use_orig_params=True,
+        )
+        policy = policy.to(device=device)
+        res = f"Wrapped FSDP module for local rank {local_rank}"
+
+        return policy, res
+
+    elif dist_mode == "ddp":
+        assert is_distributed
+
+        policy = DDP(
+            policy,
+            device_ids=[local_rank],
+            output_device=device,
+            gradient_as_bucket_view=True,
+            find_unused_parameters=True,
+        )
+        res = f"Wrapped DDP module for local rank {local_rank}"
+
+        return policy.module, res
+
+    else:
+        raise NotImplementedError(f"{dist_mode} not implemented")

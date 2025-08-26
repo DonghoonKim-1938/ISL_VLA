@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
 
-from common.policies.lora_moe import MoELoRALinear
+from common.policies.lora_moe import LoraMoELinear
 
 # ---------- ① Load‑Balancing Loss (Switch 스타일) ----------
 def compute_balance_loss(
@@ -54,7 +54,7 @@ def compute_router_loss(
     lb_losses, z_losses = [], []
 
     for module in model.modules():
-        if isinstance(module, MoELoRALinear):
+        if isinstance(module, LoraMoELinear):
             logits, gates = module.get_router_tensor()            # (..., E)
 
             lb_loss = compute_balance_loss(gates)

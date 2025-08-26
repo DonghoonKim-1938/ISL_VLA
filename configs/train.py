@@ -24,6 +24,7 @@ from huggingface_hub.errors import HfHubHTTPError
 from common import envs
 from common.optim import OptimizerConfig
 from common.optim.schedulers import LRSchedulerConfig
+from common.policies.extensions import ExtendedConfig
 from common.utils.hub import HubMixin
 from configs import parser
 from configs.default import DatasetConfig, EvalConfig, WandBConfig
@@ -37,9 +38,9 @@ class TrainPipelineConfig(HubMixin):
     train_dataset: DatasetConfig
     test_dataset: DatasetConfig | None = None
     dataset: DatasetConfig | None = None
+    method: ExtendedConfig | None = None
     env: envs.EnvConfig | None = None
     policy: PreTrainedConfig | None = None
-    adapter_file_paths: str | Path | List[str | Path] | None = None
     # Set `dir` to where you would like to save all of the run outputs. If you run another training session
     # with the same value for `dir` its contents will be overwritten unless you set `resume` to true.
     output_dir: Path | None = None
@@ -68,28 +69,9 @@ class TrainPipelineConfig(HubMixin):
     eval: EvalConfig = field(default_factory=EvalConfig)
     wandb: WandBConfig = field(default_factory=WandBConfig)
 
-    use_quantization: bool | None = False
-    use_qlora: bool | None = False
-    use_lora: bool | None = False
-    use_prefix_tuning: bool | None = False
-    use_lora_moe: bool | None = False
-    use_qlora_moe: bool | None = False
-    use_pretrained_lora: bool | None = False
-
     # 분산 학습 모드: 'ddp', 'fsdp', 또는 'none'
     dist_mode: str | None = "none"
     gradient_checkpointing: bool = False
-
-    # Adapter injection filtering: only layers whose names contain any of these keywords will be wrapped.
-    # If None or empty, all matching layers are wrapped.
-    target_keywords: list[str] | None = None
-
-    # Adapter specific hyper-parameters (overrides defaults).
-    qlora_cfg: dict[str, Any] | None = None
-    lora_cfg: dict[str, Any] | None = None
-    prefix_tuning_cfg: dict[str, Any] | None = None
-    lora_moe_cfg: dict[str, Any] | None = None
-    qlora_moe_cfg: dict[str, Any] | None = None
 
     def validate(self):
         # HACK: We parse again the cli args here to get the pretrained paths if there was some.
@@ -145,9 +127,7 @@ class TrainPipelineConfig(HubMixin):
         if self.dist_mode not in valid_modes:
             raise ValueError(f"dist_mode must be one of {valid_modes}, got {self.dist_mode}")
 
-        if self.adapter_file_paths:
-            if not isinstance(self.adapter_file_paths, list):
-                self.adapter_file_paths = [self.adapter_file_paths]
+        self.method.lora_cfg = self.method.match_cfg()
 
     @classmethod
     def __get_path_fields__(cls) -> list[str]:
