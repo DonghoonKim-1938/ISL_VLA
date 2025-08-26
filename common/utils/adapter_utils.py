@@ -1,21 +1,39 @@
 from __future__ import annotations
 
+import gc
 from pathlib import Path
-from typing import Tuple, Set
+from typing import Tuple, Set, Iterable, Callable, List, Optional, Type
 
 import torch
 import torch.nn as nn
 import safetensors.torch as sft
 
-from common.policies.lora_moe import MoELoRALinear
+from common.policies.lora import LoraConfig, LoraLinear
+from common.policies.lora_moe import LoraMoELinear
 
 __all__ = [
+    "match_name",
+    "get_parent",
     "get_adapter_param_names",
     "collect_adapter_state_dict",
     "save_adapters",
     "load_adapters",
     "load_adapters_as_expert"
 ]
+
+from common.policies.lora_msp import LoraMSPLinear
+from common.policies.pretrained import PreTrainedPolicy
+
+
+def match_name(name: str, keywords: Iterable[str]) -> bool:
+    return any(k in name for k in keywords)
+
+
+def get_parent(root: nn.Module, full_name: str) -> Tuple[nn.Module, str]:
+    parts = full_name.split(".")
+    for p in parts[:-1]:
+        root = getattr(root, p)
+    return root, parts[-1]
 
 
 def get_adapter_param_names(model: torch.nn.Module) -> Set[str]:
@@ -45,7 +63,7 @@ def load_adapters(
     adapters_file: str | Path,
     *,
     device: str | torch.device = "cpu",
-) -> Tuple[list[str], list[str]]:
+) -> Tuple[list[str], nn.Module]:
     """Load adapter weights from *adapters_file* into *model*.
 
     Returns missing_keys, unexpected_keys from `load_state_dict` for inspection.
@@ -60,72 +78,120 @@ def load_adapters(
 
 def load_adapters_as_expert(
         model: nn.Module,
-        adapters_file: str | Path,
-        expert_id: int,
-        train_experts: bool = False,
+        adapter_files: List[str | Path],
         device: str | torch.device = "cpu",
-) -> Tuple[list[str], list[str], str]:
-    """
-    Load a pretrained LoRA adapter (saved as state_dict) into an existing MoE-LoRA model
-    by inserting it as one expert (expert_id).
+) -> Optional[List[str]]:
+    res = []
+    for expert_id, adapter_file in enumerate(adapter_files):
+        # Load pretrained LoRA adapter state
+        state = sft.load_file(str(adapter_file), device=str(device))
 
-    Args:
-        model (nn.Module): Model with injected MoELoRALinear modules.
-        adapters_file (str | Path): Path to LoRA adapter weights (.pt or .bin).
-        expert_id (int): Index of expert slot to overwrite with LoRA adapter.
-        train_experts (bool): Whether to train expert slots.
-        device (str): Device to use.
-    """
-    # Load pretrained LoRA adapter state
-    state = sft.load_file(str(adapters_file), device=str(device))
+        replaced = 0
+        missing_keys = []
+        used_keys = []
 
-    replaced = 0
-    missing_keys = []
-    unexpected_keys = []
+        for name, module in model.named_modules():
+           if isinstance(module, LoraLinear):
+               missing, found = module.load_adapter_as_expert(name, state, expert_id)
+               missing_keys += missing
+               if found:
+                   used_keys += [f"{name}.A", f"{name}.B"]
+                   replaced += 1
+
+        unexpected_keys = [k for k in state.keys() if k not in used_keys]
+
+        if missing_keys:
+            print(f"[WARN] Missing keys: {missing_keys}")
+        if unexpected_keys:
+            print(f"[WARN] Unexpected keys: {unexpected_keys}")
+
+        if replaced == 0:
+            raise Exception("No matching LoRA modules found in state_dict!")
+        else:
+            res += [f"[INFO] Successfully injected LoRA into {replaced} LoraLinear layers in {adapter_file}."]
+
+    gc.collect()
+    if device != torch.device('cpu'):
+        torch.cuda.empty_cache()
+
+    return res
+
+
+def inject_adapters(
+    model: PreTrainedPolicy,
+    cfg: LoraConfig | None = None,
+    target_keywords: Iterable[str] | None = None,
+    filter_fn: Callable[[str, nn.Module], bool] | None = None,
+) -> Tuple[nn.Module, List[str]]:
+    assert isinstance(cfg, LoraConfig)
+    device = model.device
+
+    def _map_lora(layer_type: str) -> Type[LoraLinear]:
+        if layer_type == "lora":
+            return LoraLinear
+        elif layer_type == "lora_moe":
+            return LoraMoELinear
+        elif layer_type == "lora_msp":
+            return LoraMSPLinear
+        else:
+            raise ValueError(f"Unknown adapter type: {layer_type}")
+
+    layer_cls = _map_lora(cfg.layer_type)
+
+    # Special-case keyword to adapt every linear layer regardless of name
+    if target_keywords and (
+            (isinstance(target_keywords, (list, tuple, set)) and "all-linear" in target_keywords)
+            or (isinstance(target_keywords, str) and target_keywords == "all-linear")
+    ):
+        target_keywords = None
+
+    wrapped = _inject_layers(
+        model=model,
+        cfg=cfg,
+        layer_cls=layer_cls,
+        target_keywords=target_keywords,
+        filter_fn=filter_fn,
+    )
+
+    # Keep track of adapter parameter names for lightweight checkpointing
+    if wrapped:
+        adapter_names = [
+                            f"{w}.A" for w in wrapped
+                        ] + [
+                            f"{w}.B" for w in wrapped
+                        ]
+        existing = getattr(model, "_adapter_param_names", set())
+        model._adapter_param_names = set(existing).union(adapter_names)
+
+    if not wrapped:
+        raise RuntimeError("No linear layers matched for LoRA injection.")
+
+    gc.collect()
+    if device != torch.device('cpu'):
+        torch.cuda.empty_cache()
+
+    return model, wrapped
+
+def _inject_layers(
+    model: PreTrainedPolicy,
+    cfg: LoraConfig,
+    layer_cls: Type[LoraLinear],
+    target_keywords: Iterable[str] | None = None,
+    filter_fn: Callable[[str, nn.Module], bool] | None = None,
+):
+    wrapped = []
 
     for name, module in model.named_modules():
-        if isinstance(module, MoELoRALinear):
-            # Expected keys in LoRA adapter (e.g., from PEFT): 'lora_A.weight', 'lora_B.weight'
-            # Match shape to MoE expert slot
-            A_key = f"{name}.A"
-            B_key = f"{name}.B"
+        if not isinstance(module, nn.Linear):
+            continue
+        if target_keywords and not match_name(name, target_keywords):
+            continue
+        if filter_fn and not filter_fn(name, module):
+            continue
 
-            found = True
-            if A_key not in state:
-                missing_keys.append(A_key)
-                found = False
-            if B_key not in state:
-                missing_keys.append(B_key)
-                found = False
+        parent, attr = get_parent(model, name)
+        lora_layer = layer_cls(module, cfg)
+        setattr(parent, attr, lora_layer)
+        wrapped.append(name)
 
-            if found:
-                with torch.no_grad():
-                    if adapter_is_concat:
-                        module.A[expert_id].copy_(state[A_key])
-                        module.B[expert_id].copy_(state[B_key])
-                    else:
-                        module.A[expert_id].copy_(state[A_key])
-                        module.B[expert_id].copy_(state[B_key])
-                replaced += 1
-
-                # Freeze expert weights
-                module.A.requires_grad_(train_experts)
-                module.B.requires_grad_(train_experts)
-                module.router.requires_grad_(True)
-
-    # unexpected_keys = state.keys() - actually used keys
-    used_keys = {f"{name}.A" for name, m in model.named_modules() if isinstance(m, MoELoRALinear)} | \
-                {f"{name}.B" for name, m in model.named_modules() if isinstance(m, MoELoRALinear)}
-    unexpected_keys = [k for k in state.keys() if k not in used_keys]
-
-    if missing_keys:
-        print(f"[WARN] Missing keys: {missing_keys}")
-    if unexpected_keys:
-        print(f"[WARN] Unexpected keys: {unexpected_keys}")
-
-    if replaced == 0:
-        raise Exception("No matching LoRA modules found in state_dict!")
-    else:
-        res = f"[INFO] Successfully injected LoRA into {replaced} MoELoRALinear layers."
-
-    return missing_keys, unexpected_keys, res
+    return wrapped

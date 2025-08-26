@@ -7,10 +7,10 @@ import draccus
 from peft import LoraConfig
 
 from common import envs, policies  # noqa: F401
-from common.policies.lora_moe import LoRAMoEConfig
+from common.policies.lora_moe import LoraMoEConfig
 from common.policies.prefix_tuning import PrefixTuningConfig
 from common.policies.qlora import QLoRAConfig
-from common.policies.lora import LoRAConfig
+from common.policies.lora import LoraConfig
 from configs import parser
 from configs.default import DatasetConfig, EvalConfig, WandBConfig
 from configs.policies import PreTrainedConfig

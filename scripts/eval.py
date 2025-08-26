@@ -35,7 +35,7 @@ from common.datasets.utils import cycle
 
 from common.policies.factory import make_policy
 # Adapter injection utilities
-from common.policies.lora import inject_lora, LoRAConfig as InjectLoRAConfig
+from common.policies.lora import inject_lora, LoraConfig as InjectLoRAConfig
 from common.policies.prefix_tuning import inject_prefix_tuning, PrefixTuningConfig
 from common.policies.lora_moe import inject_lora_moe
 from common.policies.pretrained import PreTrainedPolicy
@@ -139,8 +139,8 @@ def eval_main(cfg: EvalOursPipelineConfig):
         pt_cfg_obj = PrefixTuningConfig(**(cfg.prefix_tuning_cfg or {}))
         policy, _ = inject_prefix_tuning(policy, pt_cfg_obj, target_keywords=cfg.target_keywords)
     elif getattr(cfg, "use_lora_moe", False):
-        from common.policies.lora_moe import LoRAMoEConfig
-        lora_moe_cfg_obj = LoRAMoEConfig(**(cfg.lora_moe_cfg or {}))
+        from common.policies.lora_moe import LoraMoEConfig
+        lora_moe_cfg_obj = LoraMoEConfig(**(cfg.lora_moe_cfg or {}))
         policy, _ = inject_lora_moe(policy, lora_moe_cfg_obj, target_keywords=cfg.target_keywords)
 
     policy.to(device=device)

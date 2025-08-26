@@ -62,6 +62,7 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
                 f"`model = {self.__class__.__name__}.from_pretrained(PRETRAINED_MODEL_NAME)`"
             )
         self.config = config
+        self._compute_router_loss = False
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -214,3 +215,6 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
         with caching.
         """
         raise NotImplementedError
+
+    def enable_router_loss(self):
+        self._compute_router_loss = True

@@ -69,7 +69,7 @@ from common.policies.pi0.paligemma_with_expert import (
 )
 from common.policies.pretrained import PreTrainedPolicy
 from common.utils.utils import get_safe_dtype
-from common.policies.moe_utils import compute_router_loss
+from common.utils.moe_utils import compute_router_loss
 
 
 def create_sinusoidal_pos_embedding(
@@ -443,7 +443,8 @@ class PI0Policy(PreTrainedPolicy):
         # For logging
         loss_dict["l2_loss"] = loss.item()
 
-        if moe_aux_cfg is not None:
+        if self._compute_router_loss:
+            assert self.train_aux_loss
             aux_loss, loss_dict = self._router_forward(moe_aux_cfg, loss_dict)
         else:
             aux_loss = torch.tensor(0.0, device=loss.device, dtype=loss.dtype)
