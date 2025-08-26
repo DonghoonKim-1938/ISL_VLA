@@ -41,7 +41,7 @@ class LoraMSPLinear(LoraLinear):
 
         # Router (token‑wise gating)
         self.track_router_stats = False
-        self.router = nn.Linear(in_f, cfg.num_experts * cfg.r, bias=True, dtype=base.weight.dtype)
+        self.router = nn.Linear(in_f, cfg.num_experts * cfg.r, bias=False, dtype=base.weight.dtype)
         nn.init.kaiming_uniform_(self.router.weight, a=math.sqrt(5))
 
         self.dropout = nn.Dropout(cfg.dropout) if cfg.dropout > 0.0 else nn.Identity()
@@ -53,6 +53,7 @@ class LoraMSPLinear(LoraLinear):
         self._last_gates = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.to(dtype=self.A.dtype)
         base_out = self.base(x)
         x_dp = self.dropout(x)
 

@@ -160,18 +160,19 @@ def train(cfg: TrainPipelineConfig):
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
     cfg.method.lora_cfg = LoraMSPConfig(
-        r=128,
-        alpha=256,
-        quantize=True
+        r=16,
+        alpha=32,
+        quantize=True,
+        num_experts=4
     )
     cfg.method.target_keywords = ["all-linear"]
     cfg.method.core = "lora_msp"
-    cfg.method.adapter_file_path = [
-        '/result/pi0_lora_r128_all-linear_openthepot/020000/pretrained_model/adapters.safetensors',
-        '/result/pi0_lora_r128_all-linear_pickplace/030000/pretrained_model/adapters.safetensors',
-        '/result/pi0_lora_r128_all-linear_pourtheblock/030000/pretrained_model/adapters.safetensors',
-        '/result/pi0_lora_r128_all-linear_pressthebutton/030000/pretrained_model/adapters.safetensors'
-    ]
+    # cfg.method.adapter_file_path = [
+    #     '/result/pi0_lora_r128_all-linear_openthepot/020000/pretrained_model/adapters.safetensors',
+    #     '/result/pi0_lora_r128_all-linear_pickplace/030000/pretrained_model/adapters.safetensors',
+    #     '/result/pi0_lora_r128_all-linear_pourtheblock/030000/pretrained_model/adapters.safetensors',
+    #     '/result/pi0_lora_r128_all-linear_pressthebutton/030000/pretrained_model/adapters.safetensors'
+    # ]
     cfg.gradient_checkpointing = True
 
     # ---------------------------------------------------------
