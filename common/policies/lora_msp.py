@@ -4,6 +4,7 @@ from typing import Optional, Dict, Callable, Iterable, Tuple, List
 import math
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -44,6 +45,10 @@ class LoraMSPLinear(LoraLinear):
         self.router = nn.Linear(in_f, cfg.num_experts * cfg.r, bias=False, dtype=base.weight.dtype)
         nn.init.kaiming_uniform_(self.router.weight, a=math.sqrt(5))
 
+        self.register_buffer("router_logit_ma", torch.zeros(self.router.weight.shape[-1], dtype=self.router.weight.dtype, device=self.router.weight.device))
+        self.momentum = 0.99
+        self.temperature = 0.07
+
         self.id_Sigma = nn.Parameter(
             torch.eye(cfg.num_experts * cfg.r, dtype=base.weight.dtype),
             requires_grad=False
@@ -80,17 +85,15 @@ class LoraMSPLinear(LoraLinear):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.to(dtype=self.A.dtype)
-        if self.A.dtype == torch.uint8:
-            None
         base_out = self.base(x)
         x_dp = self.dropout(x)
 
         # Router logits + gates
-        router_logits = self.router(x_dp)  # (..., E)
-        router_logits = F.relu(router_logits)  # (..., E)
+        router_logits = self.router(x_dp) - self.router_logit_ma
+        router_logits = F.relu(router_logits / self.temperature)  # (..., E)
         gates = torch.softmax(router_logits, dim=-1)
 
-        Sigma = torch.diag_embed(gates)
+        Sigma = torch.diag_embed(router_logits)
 
         leading_shape = x.shape[:-1]  # (...)
         A_t = self.A.transpose(-1, 0)
@@ -109,6 +112,7 @@ class LoraMSPLinear(LoraLinear):
         id_reg = torch.norm(torch.matmul(self.A, A_t) - self.id_Sigma) + torch.norm(torch.matmul(B_t, self.B) - self.id_Sigma)
 
         self._fill_cache(router_logits, gates, residual, id_reg, detach=self.track_router_stats)
+        self.update_router_ema(router_logits)
         return base_out + lora_out
 
     def compute_balance_loss(self) -> torch.Tensor:
@@ -157,6 +161,24 @@ class LoraMSPLinear(LoraLinear):
 
     def compute_id_loss(self) -> torch.Tensor:
         return self._last_id_reg if self._last_id_reg is not None else torch.tensor(0.0, dtype=self.A.dtype, device=self.A.device)
+
+    # ---------------------------------------------------------
+    # External update of router logits moving average
+    # ---------------------------------------------------------
+    @torch.no_grad()
+    def update_router_ema(self, router_logits: torch.Tensor):
+
+        batch_sum = router_logits.sum(dim=0)
+
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(batch_sum)
+            world_size = dist.get_world_size()
+        else:
+            world_size = 1
+
+        batch_mean = batch_sum / (router_logits.size(0) * world_size)
+
+        self.router_logit_ma.mul_(self.momentum).add_(batch_mean * (1 - self.momentum))
 
     def load_adapter_as_expert(
             self,
