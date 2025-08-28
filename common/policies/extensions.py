@@ -14,6 +14,7 @@ class ExtendedConfig:
     pretrained_expert: bool = False
     lora_cfg: Optional[LoraConfig] = None
     adapter_file_path: Optional[list[str | Path]] = None
+    aux_loss_cfg: Optional[dict] = None
 
     def match_cfg(self):
         if self.core in ["vanilla"]:
@@ -35,3 +36,7 @@ class ExtendedConfig:
             return True
         else:
             raise ValueError(f"Unknown core: {self.core}")
+
+    @property
+    def use_adapters(self) -> bool:
+        return self.core in ["lora", "qlora", "lora_moe", "qlora_moe", "lora_msp", "qlora_msp"]

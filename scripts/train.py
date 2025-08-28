@@ -19,6 +19,7 @@ from torch.optim import Optimizer
 import torch.distributed as dist
 
 from common.datasets.make_dataloader import make_dataloader
+from common.policies.extensions import ExtendedConfig
 from common.policies.lora import LoraConfig
 from common.policies.lora_msp import LoraMSPConfig
 from common.utils.train_utils import batch_to_device
@@ -62,13 +63,13 @@ def update_policy(
     lr_scheduler=None,
     use_amp: bool = False,
     lock=None,
-    moe_aux_cfg: dict | None = None,
+    method: ExtendedConfig | None = None,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     device = get_device_from_parameters(policy)
     policy.train()
     with torch.autocast(device_type=device.type) if use_amp else nullcontext():
-        loss, output_dict = policy.forward(batch, moe_aux_cfg=moe_aux_cfg)
+        loss, output_dict = policy.forward(batch, method = method)
     grad_scaler.scale(loss).backward()
 
     # Unscale the gradient of the optimizer's assigned params in-place **prior to gradient clipping**.
@@ -160,8 +161,8 @@ def train(cfg: TrainPipelineConfig):
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
     cfg.method.lora_cfg = LoraMSPConfig(
-        r=16,
-        alpha=32,
+        r=64,
+        alpha=128,
         quantize=True,
         num_experts=4
     )
@@ -174,6 +175,13 @@ def train(cfg: TrainPipelineConfig):
     #     '/result/pi0_lora_r128_all-linear_pressthebutton/030000/pretrained_model/adapters.safetensors'
     # ]
     cfg.gradient_checkpointing = True
+    cfg.method.aux_loss_cfg = {
+        "lb_coeff": 0.01,
+        "z_coeff": 1e-3,
+        "spec_coeff": 1e-3,
+        "mod_coeff": 1e-3,
+        "id_coeff": 1e-3,
+    }
 
     # ---------------------------------------------------------
     # distributed mode flags
@@ -287,14 +295,6 @@ def train(cfg: TrainPipelineConfig):
     test_dataloader = make_dataloader(cfg, test_dataset, device)
     test_dl_iter = cycle(test_dataloader)
 
-    # Determine MoE balance coeff if needed
-    moe_aux_cfg = None
-    if cfg.method.use_moe:
-        moe_aux_cfg = {
-            "lb_coeff": getattr(cfg.method.lora_cfg,"lb_coeff", 0.01),
-            "z_coeff": getattr(cfg.method.lora_cfg, "z_coeff", 1e-3),
-        }
-
     policy.train()
 
     train_metrics = {
@@ -365,7 +365,7 @@ def train(cfg: TrainPipelineConfig):
             grad_scaler=grad_scaler,
             lr_scheduler=lr_scheduler,
             use_amp=cfg.policy.use_amp,
-            moe_aux_cfg=moe_aux_cfg,
+            method=cfg.method,
         )
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
@@ -395,7 +395,7 @@ def train(cfg: TrainPipelineConfig):
                 logging.info(f"Checkpoint policy after step {step}")
                 checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
 
-                if use_adapter:
+                if cfg.use_adapters:
                     # Save only adapter weights + training state to keep checkpoint light
                     pretrained_dir = checkpoint_dir / "pretrained_model"
                     cfg.save_pretrained(pretrained_dir)

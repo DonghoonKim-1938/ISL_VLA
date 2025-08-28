@@ -9,7 +9,6 @@ import torch.nn.functional as F
 
 from common.policies.lora import LoraConfig, LoraLinear
 
-
 @dataclass
 class LoraMSPConfig(LoraConfig):
     num_experts: int = 4
@@ -35,6 +34,7 @@ class LoraMSPLinear(LoraLinear):
         # LoRA expert parameters – grouped tensors for efficiency
         self.A = nn.Parameter(torch.zeros(cfg.num_experts * cfg.r, in_f, dtype=base.weight.dtype))  # (E, r, in)
         self.B = nn.Parameter(torch.zeros(out_f, cfg.num_experts * cfg.r, dtype=base.weight.dtype))  # (E, out, r)
+
         # Init per LoRA paper
         nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
         nn.init.zeros_(self.B)
@@ -44,6 +44,11 @@ class LoraMSPLinear(LoraLinear):
         self.router = nn.Linear(in_f, cfg.num_experts * cfg.r, bias=False, dtype=base.weight.dtype)
         nn.init.kaiming_uniform_(self.router.weight, a=math.sqrt(5))
 
+        self.id_Sigma = nn.Parameter(
+            torch.eye(cfg.num_experts * cfg.r, dtype=base.weight.dtype),
+            requires_grad=False
+        )
+
         self.dropout = nn.Dropout(cfg.dropout) if cfg.dropout > 0.0 else nn.Identity()
 
         # expose merge flag similar to LoRA
@@ -51,17 +56,41 @@ class LoraMSPLinear(LoraLinear):
 
         self._last_router_logits = None
         self._last_gates = None
+        self._last_res = None
+        self._last_id_reg = None
+
+    def _fill_cache(self, logits: torch.Tensor, gates: torch.Tensor, res:torch.Tensor, id_reg: torch.Tensor, detach: bool = False):
+        """DDP/ckpt 안전하게 저장: graph와 분리된 텐서만 보관."""
+        if detach:
+            self._last_router_logits = logits.detach().float()
+            self._last_gates = gates.detach().float()
+            self._last_res = res.detach().float()
+            self._last_id_reg = id_reg.detach().float()
+        else:
+            self._last_router_logits = logits
+            self._last_gates = gates
+            self._last_res = res
+            self._last_id_reg = id_reg
+
+    def clear_cache(self):
+        self._last_router_logits = None
+        self._last_gates = None
+        self._last_res = None
+        self._last_id_reg = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.to(dtype=self.A.dtype)
+        if self.A.dtype == torch.uint8:
+            None
         base_out = self.base(x)
         x_dp = self.dropout(x)
 
         # Router logits + gates
         router_logits = self.router(x_dp)  # (..., E)
         router_logits = F.relu(router_logits)  # (..., E)
+        gates = torch.softmax(router_logits, dim=-1)
 
-        Sigma = torch.diag_embed(router_logits)
+        Sigma = torch.diag_embed(gates)
 
         leading_shape = x.shape[:-1]  # (...)
         A_t = self.A.transpose(-1, 0)
@@ -71,9 +100,63 @@ class LoraMSPLinear(LoraLinear):
         proj_r = torch.matmul(proj_r.unsqueeze(-2), Sigma)  # (B, S, r)
         lora_out = torch.matmul(proj_r.squeeze(-2), B_t)  # (B, S, out)
 
+        proj_r_teacher = torch.matmul(x, A_t)
+        lora_out_teacher = torch.matmul(proj_r_teacher.squeeze(-2), B_t)
+
         lora_out = lora_out * self.cfg.scale
 
+        residual = lora_out - lora_out_teacher
+        id_reg = torch.norm(torch.matmul(self.A, A_t) - self.id_Sigma) + torch.norm(torch.matmul(B_t, self.B) - self.id_Sigma)
+
+        self._fill_cache(router_logits, gates, residual, id_reg, detach=self.track_router_stats)
         return base_out + lora_out
+
+    def compute_balance_loss(self) -> torch.Tensor:
+        if self._last_gates is not None:
+            E = self._last_gates.shape[-1]
+        else:
+            return
+
+        # p_j : 확률 평균
+        p = self._last_gates.mean(dim=tuple(range(self._last_gates.dim() - 1)))  # (E,)
+
+        # f_j : 실제 토큰 분포 (hard one‑hot)
+        hard = F.one_hot(self._last_gates.argmax(-1), E)
+        f = hard.float().mean(dim=tuple(range(hard.dim() - 1)))
+
+        loss = (f * p).sum() * E  # N·(f·p)
+
+        return loss
+
+    def compute_z_loss(self) -> torch.Tensor:
+        if self._last_router_logits is not None:
+            logits = self._last_router_logits
+        elif self._last_gates is not None:
+            logits = self._last_gates.clamp_min(1e-9).log()
+        else:
+            return
+
+        z = torch.logsumexp(logits, dim=-1)  # (...)
+        loss = (z ** 2).mean()
+
+        return loss
+
+    def compute_spec_loss(self, ground_rank: int, target_rank: int) -> torch.Tensor:
+        if self._last_router_logits is None:
+            return torch.tensor(0.0, dtype=self.A.dtype, device=self.A.device)
+
+        ground_vals, _ = torch.topk(self._last_router_logits, ground_rank)
+        target_vals, _ = torch.topk(self._last_router_logits, target_rank)
+
+        E = (ground_vals ** 2).sum() / (target_vals ** 2).sum()
+
+        return torch.sqrt(1 - E)
+
+    def compute_mod_loss(self, weight: torch.Tensor = 1) -> torch.Tensor:
+        return torch.norm(self._last_res) if self._last_res is not None else torch.tensor(0.0, dtype=self.A.dtype, device=self.A.device)
+
+    def compute_id_loss(self) -> torch.Tensor:
+        return self._last_id_reg if self._last_id_reg is not None else torch.tensor(0.0, dtype=self.A.dtype, device=self.A.device)
 
     def load_adapter_as_expert(
             self,

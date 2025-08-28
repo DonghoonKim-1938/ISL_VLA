@@ -141,6 +141,10 @@ class TrainPipelineConfig(HubMixin):
         with open(save_directory / TRAIN_CONFIG_NAME, "w") as f, draccus.config_type("json"):
             draccus.dump(self, f, indent=4)
 
+    @property
+    def use_adapters(self) -> bool:
+        return self.method.use_adapters if hasattr(self.method, "use_adapters") else False
+
     @classmethod
     def from_pretrained(
         cls: Type["TrainPipelineConfig"],

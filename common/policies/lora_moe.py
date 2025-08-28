@@ -7,6 +7,7 @@ from typing import Callable, Iterable, List, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from common.policies.lora import LoraLinear, LoraConfig
 
@@ -93,12 +94,39 @@ class LoraMoELinear(LoraLinear):
             self._last_router_logits = logits
             self._last_gates = gates
 
-    def get_router_tensor(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self._last_router_logits, self._last_gates
-
     def clear_cache(self):
         self._last_router_logits = None
         self._last_gates = None
+
+    def compute_balance_loss(self) -> torch.Tensor:
+        if self._gates is not None:
+            E = self._gates.shape[-1]
+        else:
+            return
+
+        # p_j : 확률 평균
+        p = self._gates.mean(dim=tuple(range(self._gates.dim() - 1)))  # (E,)
+
+        # f_j : 실제 토큰 분포 (hard one‑hot)
+        hard = F.one_hot(self._gates.argmax(-1), E)
+        f = hard.float().mean(dim=tuple(range(hard.dim() - 1)))
+
+        loss = (f * p).sum() * E  # N·(f·p)
+
+        return loss
+
+    def compute_z_loss(self) -> torch.Tensor:
+        if self._last_router_logits is not None:
+            logits = self._last_router_logits
+        elif self._last_gates is not None:
+            logits = self._last_gates.clamp_min(1e-9).log()
+        else:
+            return
+
+        z = torch.logsumexp(logits, dim=-1)  # (...)
+        loss = (z ** 2).mean()
+
+        return loss
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore
         """Assumes input shape (..., in_features).  Router acts on last dim."""
