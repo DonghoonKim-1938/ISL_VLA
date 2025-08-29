@@ -16,17 +16,16 @@ CUDA_VISIBLE_DEVICES=${DEVICES} \
     scripts/train.py \
     --policy.path=/ckpt/pi0 \
     --dist_mode=ddp \
-    --use_lora_moe=true \
-    --use_pretrained_lora=true \
-    --lora_moe_cfg='{"r":128,"alpha":256,"routing":"top1"}' \
-    --adapter_file_paths="[
-        '/result/pi0_lora_r128_all-linear_openthepot/020000/pretrained_model/adapters.safetensors',
-        '/result/pi0_lora_r128_all-linear_pickplace/030000/pretrained_model/adapters.safetensors',
-        '/result/pi0_lora_r128_all-linear_pourtheblock/030000/pretrained_model/adapters.safetensors',
-        '/result/pi0_lora_r128_all-linear_pressthebutton/030000/pretrained_model/adapters.safetensors'
-    ]" \
+    --method.target_keywords=["all-linear"] \
+    --method.core="lora_msp" \
+    --method.aux_loss_cfg='{
+        "lb_coeff": 1e-3,
+        "z_coeff": 0.01,
+        "spec_coeff": 1e-3,
+        "mod_coeff": 1e-3,
+        "id_coeff": 1e-3,
+    }' \
     --gradient_checkpointing=true \
-    --target_keywords='["all-linear"]' \
     --train_dataset.repo_id="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
     --train_dataset.root="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
     --test_dataset.repo_id="/datasets/${DATA_ROOT_DIR}/lerobot_5hz" \
