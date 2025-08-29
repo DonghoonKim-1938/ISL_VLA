@@ -110,7 +110,6 @@ class LoraMSPLinear(LoraLinear):
 
         residual = lora_out - lora_out_teacher
         id_reg = torch.norm(torch.matmul(self.A, A_t) - self.id_Sigma) + torch.norm(torch.matmul(B_t, self.B) - self.id_Sigma)
-        id_reg = torch.clamp(id_reg, max=10.0)
 
         self._fill_cache(router_logits, gates, residual, id_reg, detach=self.track_router_stats)
         self.update_router_ema(router_logits)
@@ -158,7 +157,7 @@ class LoraMSPLinear(LoraLinear):
         denom = (target_vals ** 2).sum()
         num = (ground_vals ** 2).sum()
 
-        E = num / (denom+1e-9)
+        E = torch.clamp(num / (denom+1e-9), min=0.0, max=1.0)
         return 1 - E
 
     def compute_mod_loss(self, weight: torch.Tensor = 1) -> torch.Tensor:

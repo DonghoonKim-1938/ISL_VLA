@@ -4,7 +4,7 @@ import os
 import datetime
 from contextlib import nullcontext
 from pprint import pformat
-from typing import Any
+from typing import Any, List
 import gc
 
 # LoRA / Prefix / LoRA-MoE injection utilities
@@ -64,12 +64,13 @@ def update_policy(
     use_amp: bool = False,
     lock=None,
     method: ExtendedConfig | None = None,
+    k: List[int] | None = None,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     device = get_device_from_parameters(policy)
     policy.train()
     with torch.autocast(device_type=device.type) if use_amp else nullcontext():
-        loss, output_dict = policy.forward(batch, method = method)
+        loss, output_dict = policy.forward(batch, method = method, ranks = k)
     grad_scaler.scale(loss).backward()
     policy.clear_cache()
 
@@ -142,13 +143,14 @@ def test_policy(
     batch: Any,
     use_amp: bool = False,
     method: ExtendedConfig | None = None,
+    k: List[int] | None = None,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     device = get_device_from_parameters(policy)
     policy.eval()
     with torch.no_grad():
         with torch.autocast(device_type=device.type) if use_amp else nullcontext():
-            loss, output_dict = policy.forward(batch, method=method)
+            loss, output_dict = policy.forward(batch, method=method, ranks=k)
             # TODO(rcadene): policy.unnormalize_outputs(out_dict)
 
     test_metrics.loss = loss.item()
@@ -342,6 +344,9 @@ def train(cfg: TrainPipelineConfig):
         policy_m.supports_gradient_checkpointing = True
         policy_m.gradient_checkpointing_enable()
 
+    full_rank = int(cfg.method.lora_cfg.r * cfg.method.lora_cfg.num_experts)
+    pruning_ratio = 0.5
+
     for _ in range(step, cfg.steps):
         if isinstance(policy, FSDP):
             gc.collect()
@@ -368,6 +373,7 @@ def train(cfg: TrainPipelineConfig):
             lr_scheduler=lr_scheduler,
             use_amp=cfg.policy.use_amp,
             method=cfg.method,
+            k = [int(full_rank) , int(full_rank * pruning_ratio)]
         )
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
@@ -430,6 +436,7 @@ def train(cfg: TrainPipelineConfig):
                 policy,
                 test_batch,
                 use_amp=cfg.policy.use_amp,
+                method=cfg.method,
             )
 
             if is_ddp_master(is_distributed, local_rank):

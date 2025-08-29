@@ -48,7 +48,7 @@ policy = Pi0Policy.from_pretrained("lerobot/pi0")
 ```
 
 """
-from typing import Optional
+from typing import Optional, List
 
 import math
 from collections import deque
@@ -422,7 +422,8 @@ class PI0Policy(PreTrainedPolicy):
             batch: dict[str, Tensor],
             noise=None,
             time=None,
-            method: Optional[ExtendedConfig] = None
+            method: Optional[ExtendedConfig] = None,
+            ranks: Optional[List[int]] = None,
     ) -> tuple[Tensor, dict[str, Tensor]]:
         """Do a full training forward pass to compute the loss"""
         if self.config.adapt_to_pi_aloha:
@@ -457,9 +458,8 @@ class PI0Policy(PreTrainedPolicy):
         loss_dict["l2_loss"] = loss.item()
 
         if self._compute_router_loss:
-        # if False:
             assert self.train_aux_loss
-            aux_loss, loss_dict = self._router_forward(method.aux_loss_cfg, loss_dict)
+            aux_loss, loss_dict = self._router_forward(method.aux_loss_cfg, loss_dict, ranks=ranks)
         else:
             aux_loss = torch.tensor(0.0, device=loss.device, dtype=loss.dtype)
 
@@ -470,15 +470,19 @@ class PI0Policy(PreTrainedPolicy):
     def _router_forward(
             self,
             aux_loss_cfg: dict,
-            loss_dict: dict
+            loss_dict: dict,
+            ranks=None
     ):
+        if ranks is None:
+            ranks = [64, 32]
+
         lb_coeff = aux_loss_cfg.get("lb_coeff", 0.01)
         z_coeff = aux_loss_cfg.get("z_coeff", 1e-3)
         spec_coeff = aux_loss_cfg.get("spec_coeff", 0.0)
         mod_coeff = aux_loss_cfg.get("mod_coeff", 0.0)
         id_coeff = aux_loss_cfg.get("id_coeff", 0.0)
 
-        lb_loss, z_loss, spec_loss, mod_loss, id_loss = compute_router_loss(self)
+        lb_loss, z_loss, spec_loss, mod_loss, id_loss = compute_router_loss(self, ground_rank=ranks[0], target_rank=ranks[1])
 
         aux_loss = lb_coeff * lb_loss + z_coeff * z_loss + spec_coeff * spec_loss + mod_coeff * mod_loss + id_coeff * id_loss
 
