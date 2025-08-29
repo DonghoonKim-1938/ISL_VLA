@@ -272,6 +272,11 @@ class PI0Policy(PreTrainedPolicy):
     def get_output_embeddings(self) -> nn.Module:
         return self.model.get_output_embeddings()
 
+    def clear_cache(self):
+        for module in self.children():
+            if hasattr(module, "clear_cache"):
+                module.clear_cache()
+
     # ---------------------------------------------------------
     # Component-wise norm helpers (vision, language, action generator)
     # ---------------------------------------------------------
@@ -452,6 +457,7 @@ class PI0Policy(PreTrainedPolicy):
         loss_dict["l2_loss"] = loss.item()
 
         if self._compute_router_loss:
+        # if False:
             assert self.train_aux_loss
             aux_loss, loss_dict = self._router_forward(method.aux_loss_cfg, loss_dict)
         else:

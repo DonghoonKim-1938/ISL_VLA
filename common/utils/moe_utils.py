@@ -28,8 +28,6 @@ def compute_router_loss(
             mod_losses.append(mod_loss) if mod_loss is not None else None
             id_losses.append(id_loss) if id_loss is not None else None
 
-            module.clear_cache()
-
     lb_loss = torch.stack(lb_losses).mean()
     z_loss = torch.stack(z_losses).mean()
     spec_loss = torch.stack(spec_losses).mean()

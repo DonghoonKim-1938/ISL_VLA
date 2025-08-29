@@ -159,6 +159,8 @@ def inject_adapters(
                             f"{w}.A" for w in wrapped
                         ] + [
                             f"{w}.B" for w in wrapped
+                        ] + [
+                            f"{w}.router.weight" for w in wrapped
                         ]
         existing = getattr(model, "_adapter_param_names", set())
         model._adapter_param_names = set(existing).union(adapter_names)

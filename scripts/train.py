@@ -71,6 +71,7 @@ def update_policy(
     with torch.autocast(device_type=device.type) if use_amp else nullcontext():
         loss, output_dict = policy.forward(batch, method = method)
     grad_scaler.scale(loss).backward()
+    policy.clear_cache()
 
     # Unscale the gradient of the optimizer's assigned params in-place **prior to gradient clipping**.
     grad_scaler.unscale_(optimizer)
@@ -176,8 +177,8 @@ def train(cfg: TrainPipelineConfig):
     # ]
     cfg.gradient_checkpointing = True
     cfg.method.aux_loss_cfg = {
-        "lb_coeff": 0.01,
-        "z_coeff": 1e-3,
+        "lb_coeff": 1e-3,
+        "z_coeff": 0.01,
         "spec_coeff": 1e-3,
         "mod_coeff": 1e-3,
         "id_coeff": 1e-3,

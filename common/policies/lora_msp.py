@@ -45,7 +45,7 @@ class LoraMSPLinear(LoraLinear):
         self.router = nn.Linear(in_f, cfg.num_experts * cfg.r, bias=False, dtype=base.weight.dtype)
         nn.init.kaiming_uniform_(self.router.weight, a=math.sqrt(5))
 
-        self.register_buffer("router_logit_ma", torch.zeros(self.router.weight.shape[-1], dtype=self.router.weight.dtype, device=self.router.weight.device))
+        self.register_buffer("router_logit_ma", torch.zeros(self.router.weight.shape[0], dtype=self.router.weight.dtype, device=self.router.weight.device))
         self.momentum = 0.99
         self.temperature = 0.07
 
@@ -90,10 +90,10 @@ class LoraMSPLinear(LoraLinear):
 
         # Router logits + gates
         router_logits = self.router(x_dp) - self.router_logit_ma
-        router_logits = F.relu(router_logits / self.temperature)  # (..., E)
+        router_logits = F.gelu(router_logits / self.temperature)  # (..., E)
         gates = torch.softmax(router_logits, dim=-1)
 
-        Sigma = torch.diag_embed(router_logits)
+        Sigma = torch.diag_embed(gates)
 
         leading_shape = x.shape[:-1]  # (...)
         A_t = self.A.transpose(-1, 0)
@@ -110,6 +110,7 @@ class LoraMSPLinear(LoraLinear):
 
         residual = lora_out - lora_out_teacher
         id_reg = torch.norm(torch.matmul(self.A, A_t) - self.id_Sigma) + torch.norm(torch.matmul(B_t, self.B) - self.id_Sigma)
+        id_reg = torch.clamp(id_reg, max=10.0)
 
         self._fill_cache(router_logits, gates, residual, id_reg, detach=self.track_router_stats)
         self.update_router_ema(router_logits)
@@ -141,7 +142,9 @@ class LoraMSPLinear(LoraLinear):
             return
 
         z = torch.logsumexp(logits, dim=-1)  # (...)
-        loss = (z ** 2).mean()
+        z = torch.clamp(z, max=10.0, min=-1.0)
+        # loss = (z ** 2).mean()
+        loss = torch.log1p(z).mean()
 
         return loss
 
@@ -152,9 +155,11 @@ class LoraMSPLinear(LoraLinear):
         ground_vals, _ = torch.topk(self._last_router_logits, ground_rank)
         target_vals, _ = torch.topk(self._last_router_logits, target_rank)
 
-        E = (ground_vals ** 2).sum() / (target_vals ** 2).sum()
+        denom = (target_vals ** 2).sum()
+        num = (ground_vals ** 2).sum()
 
-        return torch.sqrt(1 - E)
+        E = num / (denom+1e-9)
+        return 1 - E
 
     def compute_mod_loss(self, weight: torch.Tensor = 1) -> torch.Tensor:
         return torch.norm(self._last_res) if self._last_res is not None else torch.tensor(0.0, dtype=self.A.dtype, device=self.A.device)
@@ -168,7 +173,7 @@ class LoraMSPLinear(LoraLinear):
     @torch.no_grad()
     def update_router_ema(self, router_logits: torch.Tensor):
 
-        batch_sum = router_logits.sum(dim=0)
+        batch_sum = router_logits.sum(dim=(0,1))
 
         if dist.is_available() and dist.is_initialized():
             dist.all_reduce(batch_sum)
@@ -208,6 +213,6 @@ class LoraMSPLinear(LoraLinear):
 
         self.A.requires_grad_(train_experts)
         self.B.requires_grad_(train_experts)
-        self.router.requires_grad_(True)
+        self.router.weight.requires_grad_(True)
 
         return missing, found
