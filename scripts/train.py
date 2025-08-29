@@ -141,13 +141,14 @@ def test_policy(
     policy: PreTrainedPolicy,
     batch: Any,
     use_amp: bool = False,
+    method: ExtendedConfig | None = None,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     device = get_device_from_parameters(policy)
     policy.eval()
     with torch.no_grad():
         with torch.autocast(device_type=device.type) if use_amp else nullcontext():
-            loss, output_dict = policy.forward(batch)
+            loss, output_dict = policy.forward(batch, method=method)
             # TODO(rcadene): policy.unnormalize_outputs(out_dict)
 
     test_metrics.loss = loss.item()
@@ -162,8 +163,8 @@ def train(cfg: TrainPipelineConfig):
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
     cfg.method.lora_cfg = LoraMSPConfig(
-        r=64,
-        alpha=128,
+        r=32,
+        alpha=64,
         quantize=True,
         num_experts=4
     )
