@@ -64,13 +64,12 @@ def update_policy(
     use_amp: bool = False,
     lock=None,
     method: ExtendedConfig | None = None,
-    k: List[int] | None = None,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     device = get_device_from_parameters(policy)
     policy.train()
     with torch.autocast(device_type=device.type) if use_amp else nullcontext():
-        loss, output_dict = policy.forward(batch, method = method, ranks = k)
+        loss, output_dict = policy.forward(batch, method = method)
     grad_scaler.scale(loss).backward()
     policy.clear_cache()
 
@@ -159,8 +158,6 @@ def test_policy(
 
 @parser.wrap()
 def train(cfg: TrainPipelineConfig):
-    cfg.validate()
-
     # ---------------------------------------------------------
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
@@ -187,6 +184,7 @@ def train(cfg: TrainPipelineConfig):
         "id_coeff": 1e-3,
     }
 
+    cfg.validate()
     # ---------------------------------------------------------
     # distributed mode flags
     # ---------------------------------------------------------
@@ -344,9 +342,6 @@ def train(cfg: TrainPipelineConfig):
         policy_m.supports_gradient_checkpointing = True
         policy_m.gradient_checkpointing_enable()
 
-    full_rank = int(cfg.method.lora_cfg.r * cfg.method.lora_cfg.num_experts)
-    pruning_ratio = 0.5
-
     for _ in range(step, cfg.steps):
         if isinstance(policy, FSDP):
             gc.collect()
@@ -373,7 +368,6 @@ def train(cfg: TrainPipelineConfig):
             lr_scheduler=lr_scheduler,
             use_amp=cfg.policy.use_amp,
             method=cfg.method,
-            k = [int(full_rank) , int(full_rank * pruning_ratio)]
         )
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
