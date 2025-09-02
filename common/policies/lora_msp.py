@@ -14,6 +14,12 @@ from common.policies.lora import LoraConfig, LoraLinear
 class LoraMSPConfig(LoraConfig):
     num_experts: int = 4
     layer_type: str = "lora_msp"
+    target_threshold: float = 0.9
+
+    use_spec_loss: bool = True
+    use_modular_loss: bool = True
+
+    router_weight_update: str = "vanilla"
 
 
 class LoraMSPLinear(LoraLinear):
@@ -45,6 +51,7 @@ class LoraMSPLinear(LoraLinear):
         self.router = nn.Linear(in_f, cfg.num_experts * cfg.r, bias=False, dtype=base.weight.dtype)
         nn.init.kaiming_uniform_(self.router.weight, a=math.sqrt(5))
 
+        self.register_buffer("router_weight_ma", torch.zeros((cfg.num_experts * cfg.r, in_f), dtype=self.router.weight.dtype, device=self.router.device))
         self.register_buffer("router_logit_ma", torch.zeros(self.router.weight.shape[0], dtype=self.router.weight.dtype, device=self.router.weight.device))
         self.momentum = 0.99
         self.temperature = 0.07
@@ -63,19 +70,47 @@ class LoraMSPLinear(LoraLinear):
         self._last_gates = None
         self._last_res = None
         self._last_id_reg = None
+        self._last_top_counts = None
 
-    def _fill_cache(self, logits: torch.Tensor, gates: torch.Tensor, res:torch.Tensor, id_reg: torch.Tensor, detach: bool = False):
+    def _threshold_mask(self, logits: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        threshold = self.cfg.target_threshold
+        sorted_vals, sorted_idx = torch.sort(logits, dim=-1, descending=True)
+
+        total_sq_sum = (sorted_vals ** 2).sum(dim=-1, keepdim=True)  # (batch, seq, 1)
+        cumsum_sq = torch.cumsum(sorted_vals ** 2, dim=-1)
+
+        mask_sorted = cumsum_sq <= (threshold * total_sq_sum)
+        mask_sorted[..., 0] = True
+
+        mask = torch.zeros_like(mask_sorted, dtype=torch.bool)
+        mask.scatter_(-1, sorted_idx, mask_sorted)
+
+        top_counts = mask.sum(dim=-1)
+
+        return mask, top_counts
+
+    def _fill_cache(
+            self,
+            logits: torch.Tensor,
+            gates: torch.Tensor,
+            res:torch.Tensor,
+            id_reg: torch.Tensor,
+            top_counts: torch.Tensor,
+            detach: bool = False
+    ):
         """DDP/ckpt 안전하게 저장: graph와 분리된 텐서만 보관."""
         if detach:
             self._last_router_logits = logits.detach().float()
             self._last_gates = gates.detach().float()
             self._last_res = res.detach().float()
             self._last_id_reg = id_reg.detach().float()
+            self._last_top_counts = top_counts.detach().float()
         else:
             self._last_router_logits = logits
             self._last_gates = gates
             self._last_res = res
             self._last_id_reg = id_reg
+            self._last_top_counts = top_counts
 
     def clear_cache(self):
         self._last_router_logits = None
@@ -90,8 +125,11 @@ class LoraMSPLinear(LoraLinear):
 
         # Router logits + gates
         router_logits = self.router(x_dp) - self.router_logit_ma
-        router_logits = F.gelu(router_logits / self.temperature)  # (..., E)
-        gates = torch.softmax(router_logits, dim=-1)
+        router_logits = torch.sigmoid(router_logits / self.temperature)  # (..., E)
+
+        mask, top_counts = self._threshold_mask(router_logits)
+        masked_router_logits = router_logits.masked_fill(~mask, float('-inf'))
+        gates = torch.softmax(masked_router_logits, dim=-1)
 
         Sigma = torch.diag_embed(gates)
 
@@ -103,17 +141,18 @@ class LoraMSPLinear(LoraLinear):
         proj_r = torch.matmul(proj_r.unsqueeze(-2), Sigma)  # (B, S, r)
         lora_out = torch.matmul(proj_r.squeeze(-2), B_t)  # (B, S, out)
 
+        scaled_lora_out = lora_out * self.cfg.scale
+
         proj_r_teacher = torch.matmul(x, A_t)
         lora_out_teacher = torch.matmul(proj_r_teacher.squeeze(-2), B_t)
-
-        lora_out = lora_out * self.cfg.scale
 
         residual = lora_out - lora_out_teacher
         id_reg = torch.norm(torch.matmul(self.A, A_t) - self.id_Sigma) + torch.norm(torch.matmul(B_t, self.B) - self.id_Sigma)
 
-        self._fill_cache(router_logits, gates, residual, id_reg, detach=self.track_router_stats)
-        self.update_router_ema(router_logits)
-        return base_out + lora_out
+        self._fill_cache(router_logits, gates, residual, id_reg, top_counts, detach=self.track_router_stats)
+        self.update_router_logit_ema(router_logits)
+        self.update_router_weight_ema(self.router.weight)
+        return base_out + scaled_lora_out
 
     def compute_balance_loss(self) -> torch.Tensor:
         if self._last_gates is not None:
@@ -147,9 +186,15 @@ class LoraMSPLinear(LoraLinear):
 
         return loss
 
+    def _compute_spec_loss(self) -> bool:
+        return not self.cfg.use_spec_loss or self._last_router_logits is None
+
     def compute_spec_loss(self, ground_rank: int, target_rank: int) -> torch.Tensor:
-        if self._last_router_logits is None:
+        if self._compute_spec_loss():
             return torch.tensor(0.0, dtype=self.A.dtype, device=self.A.device)
+
+        ground_rank = self.cfg.num_experts * self.cfg.r
+        target_rank = self._last_top_counts
 
         ground_vals, _ = torch.topk(self._last_router_logits, ground_rank)
         target_vals, _ = torch.topk(self._last_router_logits, target_rank)
@@ -161,7 +206,10 @@ class LoraMSPLinear(LoraLinear):
         return 1 - E
 
     def compute_mod_loss(self, weight: torch.Tensor = 1) -> torch.Tensor:
-        return torch.norm(self._last_res) if self._last_res is not None else torch.tensor(0.0, dtype=self.A.dtype, device=self.A.device)
+        if self.cfg.use_modular_loss:
+            return torch.norm(self._last_res) if self._last_res is not None else torch.tensor(0.0, dtype=self.A.dtype, device=self.A.device)
+        else:
+            return torch.tensor(0.0, dtype=self.A.dtype, device=self.A.device)
 
     def compute_id_loss(self) -> torch.Tensor:
         return self._last_id_reg if self._last_id_reg is not None else torch.tensor(0.0, dtype=self.A.dtype, device=self.A.device)
@@ -170,7 +218,7 @@ class LoraMSPLinear(LoraLinear):
     # External update of router logits moving average
     # ---------------------------------------------------------
     @torch.no_grad()
-    def update_router_ema(self, router_logits: torch.Tensor):
+    def update_router_logit_ema(self, router_logits: torch.Tensor):
 
         batch_sum = router_logits.sum(dim=(0,1))
 
@@ -183,6 +231,35 @@ class LoraMSPLinear(LoraLinear):
         batch_mean = batch_sum / (router_logits.size(0) * world_size)
 
         self.router_logit_ma.mul_(self.momentum).add_(batch_mean * (1 - self.momentum))
+
+    @torch.no_grad()
+    def update_router_weight_ema(self, weight: torch.Tensor):
+
+        batch_mean = self._get_batch_mean(weight)
+        batch_sum = weight.sum(dim=(0,1))
+
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(batch_sum)
+            world_size = dist.get_world_size()
+        else:
+            world_size = 1
+
+        batch_mean = batch_sum / (weight.size(0) * world_size)
+
+        self.router_weight_ma.mul_(self.momentum).add_(batch_mean * (1 - self.momentum))
+
+    def _get_batch_mean(self, tensor: torch.Tensor) -> torch.Tensor:
+        batch_sum = tensor.sum(dim=(0,1))
+
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(batch_sum)
+            world_size = dist.get_world_size()
+        else:
+            world_size = 1
+
+        batch_mean = batch_sum / (tensor.size(0) * world_size)
+
+        return batch_mean
 
     def load_adapter_as_expert(
             self,
@@ -205,7 +282,6 @@ class LoraMSPLinear(LoraLinear):
         if B_key not in state:
             missing.append(B_key)
             found = False
-
         if found:
             self.A[expert_bank, :].copy_(state[A_key])
             self.B[:, expert_bank].copy_(state[B_key])

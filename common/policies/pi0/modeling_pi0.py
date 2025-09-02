@@ -14,53 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-π0: A Vision-Language-Action Flow Model for General Robot Control
-
-[Paper](https://www.physicalintelligence.company/download/pi0.pdf)
-[Jax code](https://github.com/Physical-Intelligence/openpi)
-
-Designed by Physical Intelligence. Ported from Jax by Hugging Face.
-
-Install pi0 extra dependencies:
-```bash
-pip install -e ".[pi0]"
-```
-
-Example of finetuning the pi0 pretrained model (`pi0_base` in `openpi`):
-```bash
-python lerobot/scripts/train.py \
---policy.path=lerobot/pi0 \
---dataset.repo_id=danaaubakirova/koch_test
-```
-
-Example of finetuning the pi0 neural network with PaliGemma and expert Gemma
-pretrained with VLM default parameters before pi0 finetuning:
-```bash
-python lerobot/scripts/train.py \
---policy.type=pi0 \
---dataset.repo_id=danaaubakirova/koch_test
-```
-
-Example of using the pi0 pretrained model outside LeRobot training framework:
-```python
-policy = Pi0Policy.from_pretrained("lerobot/pi0")
-```
-
-"""
-from typing import Optional, List
-
 import math
 from collections import deque
-
-from common.policies.extensions import ExtendedConfig
-from common.utils.utils import log_time
 
 import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
 from transformers import AutoTokenizer
-from common.utils.model_utils import compute_param_norm, compute_grad_norm
 
 from common.constants import ACTION, OBS_ROBOT
 from common.policies.normalize import Normalize, Unnormalize
@@ -69,159 +29,21 @@ from common.policies.pi0.paligemma_with_expert import (
     PaliGemmaWithExpertConfig,
     PaliGemmaWithExpertModel,
 )
-from common.policies.pretrained import PreTrainedPolicy
-from common.utils.utils import get_safe_dtype
-from common.utils.moe_utils import compute_router_loss
+from common.policies.pretrained import PreTrainedPolicy, PreTrainedFlowMatching
 
-
-def create_sinusoidal_pos_embedding(
-    time: torch.tensor, dimension: int, min_period: float, max_period: float, device="cpu"
-) -> Tensor:
-    """Computes sine-cosine positional embedding vectors for scalar positions."""
-    if dimension % 2 != 0:
-        raise ValueError(f"dimension ({dimension}) must be divisible by 2")
-
-    if time.ndim != 1:
-        raise ValueError("The time tensor is expected to be of shape `(batch_size, )`.")
-
-    dtype = get_safe_dtype(torch.float64, device.type)
-    fraction = torch.linspace(0.0, 1.0, dimension // 2, dtype=dtype, device=device)
-    period = min_period * (max_period / min_period) ** fraction
-
-    # Compute the outer product
-    scaling_factor = 1.0 / period * 2 * math.pi
-    sin_input = scaling_factor[None, :] * time[:, None]
-    pos_emb = torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
-    return pos_emb
-
+from common.utils.model_utils import (
+    aloha_gripper_to_angular,
+    aloha_gripper_from_angular_inv,
+    pad_vector,
+    create_sinusoidal_pos_embedding,
+    make_att_2d_masks, aloha_gripper_from_angular
+)
+from common.utils.utils import log_time
 
 def sample_beta(alpha, beta, bsize, device):
     gamma1 = torch.empty((bsize,), device=device).uniform_(0, 1).pow(1 / alpha)
     gamma2 = torch.empty((bsize,), device=device).uniform_(0, 1).pow(1 / beta)
     return gamma1 / (gamma1 + gamma2)
-
-
-def make_att_2d_masks(pad_masks, att_masks):
-    """Copied from big_vision.
-
-    Tokens can attend to valid inputs tokens which have a cumulative mask_ar
-    smaller or equal to theirs. This way `mask_ar` int[B, N] can be used to
-    setup several types of attention, for example:
-
-      [[1 1 1 1 1 1]]: pure causal attention.
-
-      [[0 0 0 1 1 1]]: prefix-lm attention. The first 3 tokens can attend between
-          themselves and the last 3 tokens have a causal attention. The first
-          entry could also be a 1 without changing behaviour.
-
-      [[1 0 1 0 1 0 0 1 0 0]]: causal attention between 4 blocks. Tokens of a
-          block can attend all previous blocks and all tokens on the same block.
-
-    Args:
-      input_mask: bool[B, N] true if its part of the input, false if padding.
-      mask_ar: int32[B, N] mask that's 1 where previous tokens cannot depend on
-        it and 0 where it shares the same attention mask as the previous token.
-    """
-    if att_masks.ndim != 2:
-        raise ValueError(att_masks.ndim)
-    if pad_masks.ndim != 2:
-        raise ValueError(pad_masks.ndim)
-
-    cumsum = torch.cumsum(att_masks, dim=1)
-    att_2d_masks = cumsum[:, None, :] <= cumsum[:, :, None]
-    pad_2d_masks = pad_masks[:, None, :] * pad_masks[:, :, None]
-    att_2d_masks = att_2d_masks & pad_2d_masks
-    return att_2d_masks
-
-
-def resize_with_pad(img, width, height, pad_value=-1):
-    # assume no-op when width height fits already
-    if img.ndim != 4:
-        raise ValueError(f"(b,c,h,w) expected, but {img.shape}")
-
-    cur_height, cur_width = img.shape[2:]
-
-    ratio = max(cur_width / width, cur_height / height)
-    resized_height = int(cur_height / ratio)
-    resized_width = int(cur_width / ratio)
-    resized_img = F.interpolate(
-        img, size=(resized_height, resized_width), mode="bilinear", align_corners=False
-    )
-
-    pad_height = max(0, int(height - resized_height))
-    pad_width = max(0, int(width - resized_width))
-
-    # pad on left and top of image
-    padded_img = F.pad(resized_img, (pad_width, 0, pad_height, 0), value=pad_value)
-    return padded_img
-
-
-def pad_vector(vector, new_dim):
-    """Can be (batch_size x sequence_length x features_dimension)
-    or (batch_size x features_dimension)
-    """
-    if vector.shape[-1] == new_dim:
-        return vector
-    shape = list(vector.shape)
-    current_dim = shape[-1]
-    shape[-1] = new_dim
-    new_vector = torch.zeros(*shape, dtype=vector.dtype, device=vector.device)
-    new_vector[..., :current_dim] = vector
-    return new_vector
-
-
-def normalize(x, min_val, max_val):
-    return (x - min_val) / (max_val - min_val)
-
-
-def unnormalize(x, min_val, max_val):
-    return x * (max_val - min_val) + min_val
-
-
-def safe_arcsin(value):
-    # This ensures that the input stays within
-    # [−1,1] to avoid invalid values for arcsin
-    return torch.arcsin(torch.clamp(value, -1.0, 1.0))
-
-
-def aloha_gripper_to_angular(value):
-    # Aloha transforms the gripper positions into a linear space. The following code
-    # reverses this transformation to be consistent with pi0 which is pretrained in
-    # angular space.
-    #
-    # These values are coming from the Aloha code:
-    # PUPPET_GRIPPER_POSITION_OPEN, PUPPET_GRIPPER_POSITION_CLOSED
-    value = unnormalize(value, min_val=0.01844, max_val=0.05800)
-
-    # This is the inverse of the angular to linear transformation inside the Interbotix code.
-    def linear_to_radian(linear_position, arm_length, horn_radius):
-        value = (horn_radius**2 + linear_position**2 - arm_length**2) / (2 * horn_radius * linear_position)
-        return safe_arcsin(value)
-
-    # The constants are taken from the Interbotix code.
-    value = linear_to_radian(value, arm_length=0.036, horn_radius=0.022)
-
-    # Normalize to [0, 1].
-    # The values 0.4 and 1.5 were measured on an actual Trossen robot.
-    return normalize(value, min_val=0.4, max_val=1.5)
-
-
-def aloha_gripper_from_angular(value):
-    # Convert from the gripper position used by pi0 to the gripper position that is used by Aloha.
-    # Note that the units are still angular but the range is different.
-
-    # The values 0.4 and 1.5 were measured on an actual Trossen robot.
-    value = unnormalize(value, min_val=0.4, max_val=1.5)
-
-    # These values are coming from the Aloha code:
-    # PUPPET_GRIPPER_JOINT_OPEN, PUPPET_GRIPPER_JOINT_CLOSE
-    return normalize(value, min_val=-0.6213, max_val=1.4910)
-
-
-def aloha_gripper_from_angular_inv(value):
-    # Directly inverts the gripper_from_angular function.
-    value = unnormalize(value, min_val=-0.6213, max_val=1.4910)
-    return normalize(value, min_val=0.4, max_val=1.5)
 
 
 class PI0Policy(PreTrainedPolicy):
@@ -272,72 +94,9 @@ class PI0Policy(PreTrainedPolicy):
     def get_output_embeddings(self) -> nn.Module:
         return self.model.get_output_embeddings()
 
-    def clear_cache(self):
-        for module in self.children():
-            if hasattr(module, "clear_cache"):
-                module.clear_cache()
-
     # ---------------------------------------------------------
     # Component-wise norm helpers (vision, language, action generator)
     # ---------------------------------------------------------
-
-    def get_component_norms(self) -> dict[str, float]:
-        """Return L2 norms of parameters and gradients for main Pi0 components.
-
-        Returns a dictionary with keys:
-            vision_param_norm, vision_grad_norm,
-            lang_param_norm, lang_grad_norm,
-            action_param_norm, action_grad_norm
-
-        Gradient norms require that backward() has already been executed in the
-        current iteration.
-        """
-
-        # Vision tower (frozen or trainable)
-        vision_modules = [self.model.paligemma_with_expert.paligemma.vision_tower]
-
-        # Language model (PaliGemma text encoder)
-        lang_modules = [self.model.paligemma_with_expert.paligemma.language_model]
-
-        # Action generator (Gemma expert + projection / MLP blocks)
-        action_modules = [
-            self.model.paligemma_with_expert.gemma_expert,
-            self.model.state_proj,
-            self.model.action_in_proj,
-            self.model.action_out_proj,
-            self.model.action_time_mlp_in,
-            self.model.action_time_mlp_out,
-        ]
-
-        # Compute L2 norms
-        vision_param_norm_sq = 0.0
-        vision_grad_norm_sq = 0.0
-        for m in vision_modules:
-            vision_param_norm_sq += compute_param_norm(m, only_trainable=True) ** 2
-            vision_grad_norm_sq += compute_grad_norm(m, only_trainable=True) ** 2
-
-        lang_param_norm_sq = 0.0
-        lang_grad_norm_sq = 0.0
-        for m in lang_modules:
-            lang_param_norm_sq += compute_param_norm(m, only_trainable=True) ** 2
-            lang_grad_norm_sq += compute_grad_norm(m, only_trainable=True) ** 2
-
-        action_param_norm_sq = 0.0
-        action_grad_norm_sq = 0.0
-        for m in action_modules:
-            action_param_norm_sq += compute_param_norm(m, only_trainable=True) ** 2
-            action_grad_norm_sq += compute_grad_norm(m, only_trainable=True) ** 2
-
-        metrics = {
-            "vision_param_norm": vision_param_norm_sq ** 0.5,
-            "vision_grad_norm": vision_grad_norm_sq ** 0.5,
-            "lang_param_norm": lang_param_norm_sq ** 0.5,
-            "lang_grad_norm": lang_grad_norm_sq ** 0.5,
-            "action_param_norm": action_param_norm_sq ** 0.5,
-            "action_grad_norm": action_grad_norm_sq ** 0.5,
-        }
-
-        return metrics
 
     def unfreeze_action_out_proj(self):
         """Freeze all parameters in the network except ``action_out_proj``.
@@ -417,127 +176,6 @@ class PI0Policy(PreTrainedPolicy):
 
         return self._action_queue.popleft()
 
-    def forward(
-            self,
-            batch: dict[str, Tensor],
-            noise=None,
-            time=None,
-            method: Optional[ExtendedConfig] = None,
-            ranks: Optional[List[int]] = None,
-    ) -> tuple[Tensor, dict[str, Tensor]]:
-        """Do a full training forward pass to compute the loss"""
-        if self.config.adapt_to_pi_aloha:
-            batch[OBS_ROBOT] = self._pi_aloha_decode_state(batch[OBS_ROBOT])
-            batch[ACTION] = self._pi_aloha_encode_actions_inv(batch[ACTION])
-
-        batch = self.normalize_inputs(batch)
-        batch = self.normalize_targets(batch)
-
-        images, img_masks = self.prepare_images(batch)
-        state = self.prepare_state(batch)
-        lang_tokens, lang_masks = self.prepare_language(batch)
-        actions = self.prepare_action(batch)
-        actions_is_pad = batch.get("action_is_pad")
-
-        loss_dict = {}
-        losses = self.model.forward(images, img_masks, lang_tokens, lang_masks, state, actions, noise, time)
-        loss_dict["losses_after_forward"] = losses.clone()
-
-        if actions_is_pad is not None:
-            in_episode_bound = ~actions_is_pad
-            losses = losses * in_episode_bound.unsqueeze(-1)
-            loss_dict["losses_after_in_ep_bound"] = losses.clone()
-
-        # Remove padding
-        losses = losses[:, :, : self.config.max_action_dim]
-        loss_dict["losses_after_rm_padding"] = losses.clone()
-
-        # For backward pass
-        loss = losses.mean()
-        # For logging
-        loss_dict["l2_loss"] = loss.item()
-
-        if self._compute_router_loss:
-            assert self.train_aux_loss
-            aux_loss, loss_dict = self._router_forward(method.aux_loss_cfg, loss_dict, ranks=ranks)
-        else:
-            aux_loss = torch.tensor(0.0, device=loss.device, dtype=loss.dtype)
-
-        total_loss = loss+aux_loss
-
-        return total_loss, loss_dict
-
-    def _router_forward(
-            self,
-            aux_loss_cfg: dict,
-            loss_dict: dict,
-            ranks=None
-    ):
-        if ranks is None:
-            ranks = [64, 32]
-
-        lb_coeff = aux_loss_cfg.get("lb_coeff", 0.01)
-        z_coeff = aux_loss_cfg.get("z_coeff", 1e-3)
-        spec_coeff = aux_loss_cfg.get("spec_coeff", 0.0)
-        mod_coeff = aux_loss_cfg.get("mod_coeff", 0.0)
-        id_coeff = aux_loss_cfg.get("id_coeff", 0.0)
-
-        lb_loss, z_loss, spec_loss, mod_loss, id_loss = compute_router_loss(self, ground_rank=ranks[0], target_rank=ranks[1])
-
-        aux_loss = lb_coeff * lb_loss + z_coeff * z_loss + spec_coeff * spec_loss + mod_coeff * mod_loss + id_coeff * id_loss
-
-        loss_dict["router_balance_loss"] = lb_loss.item()
-        loss_dict["router_z_loss"] = z_loss.item()
-        loss_dict["router_spec_loss"] = spec_loss.item()
-        loss_dict["router_mod_loss"] = mod_loss.item()
-        loss_dict["router_id_loss"] = id_loss.item()
-        loss_dict["moe_aux_loss"] = aux_loss.item()
-
-        return aux_loss, loss_dict
-
-    def prepare_images(self, batch):
-        """Apply Pi0 preprocessing to the images, like resizing to 224x224 and padding to keep aspect ratio, and
-        convert pixel range from [0.0, 1.0] to [-1.0, 1.0] as requested by SigLIP.
-        """
-        images = []
-        img_masks = []
-
-        present_img_keys = [key for key in self.config.image_features if key in batch]
-        missing_img_keys = [key for key in self.config.image_features if key not in batch]
-
-        if len(present_img_keys) == 0:
-            raise ValueError(
-                f"All image features are missing from the batch. At least one expected. (batch: {batch.keys()}) (image_features:{self.config.image_features})"
-            )
-
-        # Preprocess image features present in the batch
-        for key in present_img_keys:
-            img = batch[key]
-
-            if self.config.resize_imgs_with_padding is not None:
-                img = resize_with_pad(img, *self.config.resize_imgs_with_padding, pad_value=0)
-
-            # Normalize from range [0,1] to [-1,1] as expacted by siglip
-            img = img * 2.0 - 1.0
-
-            bsize = img.shape[0]
-            device = img.device
-            mask = torch.ones(bsize, dtype=torch.bool, device=device)
-            images.append(img)
-            img_masks.append(mask)
-
-        # Create image features not present in the batch
-        # as fully 0 padded images.
-        for num_empty_cameras in range(len(missing_img_keys)):
-            if num_empty_cameras >= self.config.empty_cameras:
-                break
-            img = torch.ones_like(img) * -1
-            mask = torch.zeros_like(mask)
-            images.append(img)
-            img_masks.append(mask)
-
-        return images, img_masks
-
     def prepare_language(self, batch) -> tuple[Tensor, Tensor]:
         """Tokenize the text input"""
         device = batch[OBS_ROBOT].device
@@ -596,7 +234,7 @@ class PI0Policy(PreTrainedPolicy):
         return actions
 
 
-class PI0FlowMatching(nn.Module):
+class PI0FlowMatching(PreTrainedFlowMatching):
     """
     π0: A Vision-Language-Action Flow Model for General Robot Control
 
@@ -623,8 +261,8 @@ class PI0FlowMatching(nn.Module):
     └──────────────────────────────┘
     """
 
-    def __init__(self, config):
-        super().__init__()
+    def __init__(self, config: PI0Config):
+        super().__init__(config)
         self.config = config
 
         paligemma_with_export_config = PaliGemmaWithExpertConfig(
@@ -645,20 +283,6 @@ class PI0FlowMatching(nn.Module):
         self.set_requires_grad()
 
         self.sample_dtype = self.state_proj.weight.dtype
-
-    def set_requires_grad(self):
-        for params in self.state_proj.parameters():
-            params.requires_grad = self.config.train_state_proj
-
-    def sample_noise(self, shape, device):
-        noise = torch.normal(
-            mean=0.0,
-            std=1.0,
-            size=shape,
-            dtype=self.sample_dtype if self.sample_dtype.is_floating_point else torch.bfloat16,
-            device=device,
-        )
-        return noise
 
     def sample_time(self, bsize, device):
         time_beta = sample_beta(1.5, 1.0, bsize, device)

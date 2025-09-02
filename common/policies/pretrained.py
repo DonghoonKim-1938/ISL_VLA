@@ -15,7 +15,7 @@ import abc
 import logging
 import os
 from pathlib import Path
-from typing import Type, TypeVar
+from typing import Type, TypeVar, Optional, List
 
 import packaging
 import safetensors
@@ -28,28 +28,20 @@ import torch
 from torch import Tensor, nn
 from transformers import PreTrainedModel as HFPreTrainedModel
 
+from common.constants import OBS_ROBOT, ACTION
+from common.policies.extensions import ExtendedConfig
 from common.utils.hub import HubMixin
+from common.utils.model_utils import *
+from common.utils.model_utils import resize_with_pad
+from common.utils.moe_utils import compute_router_loss
 from configs.policies import PreTrainedConfig
 
 T = TypeVar("T", bound="PreTrainedPolicy")
-
-DEFAULT_POLICY_CARD = """
----
-# For reference on model card metadata, see the spec: https://github.com/huggingface/hub-docs/blob/main/modelcard.md?plain=1
-# Doc / guide: https://huggingface.co/docs/hub/model-cards
-{{ card_data }}
----
-
-This policy has been pushed to the Hub using [LeRobot](https://github.com/huggingface/lerobot):
-- Docs: {{ docs_url | default("[More Information Needed]", true) }}
-"""
-
 
 class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
     """
     Base class for policy models.
     """
-
     config_class: None
     name: None
 
@@ -168,16 +160,6 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
             model.to(map_location)
         return model
 
-    # def generate_model_card(self, *args, **kwargs) -> ModelCard:
-    #     card = ModelCard.from_template(
-    #         card_data=self._hub_mixin_info.model_card_data,
-    #         template_str=self._hub_mixin_info.model_card_template,
-    #         repo_url=self._hub_mixin_info.repo_url,
-    #         docs_url=self._hub_mixin_info.docs_url,
-    #         **kwargs,
-    #     )
-    #     return card
-
     @abc.abstractmethod
     def get_optim_params(self) -> dict:
         """
@@ -187,25 +169,89 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
 
     @abc.abstractmethod
     def reset(self):
-        """To be called whenever the environment is reset.
-
-        Does things like clearing caches.
-        """
         raise NotImplementedError
 
-    # TODO(aliberts, rcadene): split into 'forward' and 'compute_loss'?
-    @abc.abstractmethod
-    def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict | None]:
-        """_summary_
+    def forward(
+            self,
+            batch: dict[str, Tensor],
+            noise=None,
+            time=None,
+            method: Optional[ExtendedConfig] = None,
+            ranks: Optional[List[int]] = None,
+    ) -> tuple[Tensor, dict[str, Tensor]]:
+        if self.config.adapt_to_pi_aloha:
+            batch[OBS_ROBOT] = self._pi_aloha_decode_state(batch[OBS_ROBOT])
+            batch[ACTION] = self._pi_aloha_encode_actions_inv(batch[ACTION])
 
-        Args:
-            batch (dict[str, Tensor]): _description_
+        batch = self.normalize_inputs(batch)
+        batch = self.normalize_targets(batch)
 
-        Returns:
-            tuple[Tensor, dict | None]: The loss and potentially other information. Apart from the loss which
-                is a Tensor, all other items should be logging-friendly, native Python types.
-        """
-        raise NotImplementedError
+        images, img_masks = self.prepare_images(batch)
+        state = self.prepare_state(batch)
+        lang_tokens, lang_masks = self.prepare_language(batch)
+        actions = self.prepare_action(batch)
+        actions_is_pad = batch.get("action_is_pad")
+
+        loss_dict = {}
+        losses = self.model.forward(images, img_masks, lang_tokens, lang_masks, state, actions, noise, time)
+        loss_dict["losses_after_forward"] = losses.clone()
+
+        if actions_is_pad is not None:
+            in_episode_bound = ~actions_is_pad
+            losses = losses * in_episode_bound.unsqueeze(-1)
+            loss_dict["losses_after_in_ep_bound"] = losses.clone()
+
+        # Remove padding
+        losses = losses[:, :, : self.config.max_action_dim]
+        loss_dict["losses_after_rm_padding"] = losses.clone()
+
+        # For backward pass
+        loss = losses.mean()
+        # For logging
+        loss_dict["l2_loss"] = loss.item()
+
+        if self._compute_router_loss:
+            assert self.train_aux_loss
+            aux_loss, loss_dict = self._router_forward(method.aux_loss_cfg, loss_dict, ranks=ranks)
+        else:
+            aux_loss = torch.tensor(0.0, device=loss.device, dtype=loss.dtype)
+
+        total_loss = loss+aux_loss
+
+        return total_loss, loss_dict
+
+    def _router_forward(
+            self,
+            aux_loss_cfg: dict,
+            loss_dict: dict,
+            ranks=None
+    ):
+        if ranks is None:
+            ranks = [64, 32]
+
+        lb_coeff = aux_loss_cfg.get("lb_coeff", 0.01)
+        z_coeff = aux_loss_cfg.get("z_coeff", 1e-3)
+        spec_coeff = aux_loss_cfg.get("spec_coeff", 0.0)
+        mod_coeff = aux_loss_cfg.get("mod_coeff", 0.0)
+        id_coeff = aux_loss_cfg.get("id_coeff", 0.0)
+
+        lb_loss, z_loss, spec_loss, mod_loss, id_loss = compute_router_loss(self, ground_rank=ranks[0], target_rank=ranks[1])
+
+        aux_loss = lb_coeff * lb_loss + z_coeff * z_loss + spec_coeff * spec_loss + mod_coeff * mod_loss + id_coeff * id_loss
+
+        loss_dict["router_balance_loss"] = lb_loss.item()
+        loss_dict["router_z_loss"] = z_loss.item()
+        loss_dict["router_spec_loss"] = spec_loss.item()
+        loss_dict["router_mod_loss"] = mod_loss.item()
+        loss_dict["router_id_loss"] = id_loss.item()
+        loss_dict["moe_aux_loss"] = aux_loss.item()
+
+        return aux_loss, loss_dict
+
+    def clear_cache(self):
+        for module in self.children():
+            if hasattr(module, "clear_cache"):
+                module.clear_cache()
 
     @abc.abstractmethod
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
@@ -218,3 +264,134 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
 
     def enable_router_loss(self):
         self._compute_router_loss = True
+
+    def get_component_norms(self) -> dict[str, float]:
+        """Return L2 norms of parameters and gradients for main Pi0 components.
+
+        Returns a dictionary with keys:
+            vision_param_norm, vision_grad_norm,
+            lang_param_norm, lang_grad_norm,
+            action_param_norm, action_grad_norm
+
+        Gradient norms require that backward() has already been executed in the
+        current iteration.
+        """
+
+        # Vision tower (frozen or trainable)
+        vision_modules = self.vision_modules
+
+        # Language model (PaliGemma text encoder)
+        lang_modules = self.lang_modules
+
+        # Action generator (Gemma expert + projection / MLP blocks)
+        action_modules = self.action_modules
+
+        # Compute L2 norms
+        vision_param_norm_sq = 0.0
+        vision_grad_norm_sq = 0.0
+        for m in vision_modules:
+            vision_param_norm_sq += compute_param_norm(m, only_trainable=True) ** 2
+            vision_grad_norm_sq += compute_grad_norm(m, only_trainable=True) ** 2
+
+        lang_param_norm_sq = 0.0
+        lang_grad_norm_sq = 0.0
+        for m in lang_modules:
+            lang_param_norm_sq += compute_param_norm(m, only_trainable=True) ** 2
+            lang_grad_norm_sq += compute_grad_norm(m, only_trainable=True) ** 2
+
+        action_param_norm_sq = 0.0
+        action_grad_norm_sq = 0.0
+        for m in action_modules:
+            action_param_norm_sq += compute_param_norm(m, only_trainable=True) ** 2
+            action_grad_norm_sq += compute_grad_norm(m, only_trainable=True) ** 2
+
+        metrics = {
+            "vision_param_norm": vision_param_norm_sq ** 0.5,
+            "vision_grad_norm": vision_grad_norm_sq ** 0.5,
+            "lang_param_norm": lang_param_norm_sq ** 0.5,
+            "lang_grad_norm": lang_grad_norm_sq ** 0.5,
+            "action_param_norm": action_param_norm_sq ** 0.5,
+            "action_grad_norm": action_grad_norm_sq ** 0.5,
+        }
+
+        return metrics
+
+    @abc.abstractmethod
+    @property
+    def vision_modules(self) -> list[str]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    @property
+    def lang_modules(self) -> list[str]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    @property
+    def action_modules(self) -> list[str]:
+        raise NotImplementedError
+
+    def prepare_images(self, batch):
+        """Apply Pi0 preprocessing to the images, like resizing to 224x224 and padding to keep aspect ratio, and
+        convert pixel range from [0.0, 1.0] to [-1.0, 1.0] as requested by SigLIP.
+        """
+        images = []
+        img_masks = []
+
+        present_img_keys = [key for key in self.config.image_features if key in batch]
+        missing_img_keys = [key for key in self.config.image_features if key not in batch]
+
+        if len(present_img_keys) == 0:
+            raise ValueError(
+                f"All image features are missing from the batch. At least one expected. (batch: {batch.keys()}) (image_features:{self.config.image_features})"
+            )
+
+        # Preprocess image features present in the batch
+        for key in present_img_keys:
+            img = batch[key]
+
+            if self.config.resize_imgs_with_padding is not None:
+                img = resize_with_pad(img, *self.config.resize_imgs_with_padding, pad_value=0)
+
+            # Normalize from range [0,1] to [-1,1] as expacted by siglip
+            img = img * 2.0 - 1.0
+
+            bsize = img.shape[0]
+            device = img.device
+            mask = torch.ones(bsize, dtype=torch.bool, device=device)
+            images.append(img)
+            img_masks.append(mask)
+
+        # Create image features not present in the batch
+        # as fully 0 padded images.
+        for num_empty_cameras in range(len(missing_img_keys)):
+            if num_empty_cameras >= self.config.empty_cameras:
+                break
+            img = torch.ones_like(img) * -1
+            mask = torch.zeros_like(mask)
+            images.append(img)
+            img_masks.append(mask)
+
+        return images, img_masks
+
+class PreTrainedFlowMatching(nn.Module):
+    def __init__(self, config: PreTrainedConfig):
+        super().__init__()
+
+    def set_requires_grad(self):
+        for params in self.state_proj.parameters():
+            params.requires_grad = self.config.train_state_proj
+
+    def sample_noise(self, shape: torch.Tensor, device: torch.device) -> torch.Tensor:
+        noise = torch.normal(
+            mean=0.0,
+            std=1.0,
+            size=shape,
+            dtype=self.sample_dtype if self.sample_dtype.is_floating_point else torch.bfloat16,
+            device=device,
+        )
+        return noise
+
+    @abc.abstractmethod
+    def sample_time(self, bsize: int, device: torch.device) -> torch.Tensor:
+        raise NotImplementedError

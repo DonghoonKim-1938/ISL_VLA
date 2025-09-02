@@ -142,14 +142,13 @@ def test_policy(
     batch: Any,
     use_amp: bool = False,
     method: ExtendedConfig | None = None,
-    k: List[int] | None = None,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     device = get_device_from_parameters(policy)
     policy.eval()
     with torch.no_grad():
         with torch.autocast(device_type=device.type) if use_amp else nullcontext():
-            loss, output_dict = policy.forward(batch, method=method, ranks=k)
+            loss, output_dict = policy.forward(batch, method=method)
             # TODO(rcadene): policy.unnormalize_outputs(out_dict)
 
     test_metrics.loss = loss.item()
@@ -158,23 +157,28 @@ def test_policy(
 
 @parser.wrap()
 def train(cfg: TrainPipelineConfig):
+    cfg.validate()
+
     # ---------------------------------------------------------
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
+    cfg.method = ExtendedConfig()
     cfg.method.lora_cfg = LoraMSPConfig(
         r=32,
         alpha=64,
         quantize=True,
-        num_experts=4
+        num_experts=4,
+        target_threshold=0.9,
+        use_spec_loss=True,
     )
     cfg.method.target_keywords = ["all-linear"]
     cfg.method.core = "lora_msp"
-    # cfg.method.adapter_file_path = [
-    #     '/result/pi0_lora_r128_all-linear_openthepot/020000/pretrained_model/adapters.safetensors',
-    #     '/result/pi0_lora_r128_all-linear_pickplace/030000/pretrained_model/adapters.safetensors',
-    #     '/result/pi0_lora_r128_all-linear_pourtheblock/030000/pretrained_model/adapters.safetensors',
-    #     '/result/pi0_lora_r128_all-linear_pressthebutton/030000/pretrained_model/adapters.safetensors'
-    # ]
+    cfg.method.adapter_file_path = [
+        '/result/pi0_lora_r32_openthepot/checkpoints/030000/pretrained_model/adapters.safetensors',
+        '/result/pi0_lora_r32_pickplace/030000/pretrained_model/adapters.safetensors',
+        '/result/pi0_lora_r32_pourtheblock/030000/pretrained_model/adapters.safetensors',
+        '/result/pi0_lora_r32_pushthebutton/030000/pretrained_model/adapters.safetensors'
+    ]
     cfg.gradient_checkpointing = True
     cfg.method.aux_loss_cfg = {
         "lb_coeff": 1e-3,
@@ -184,7 +188,6 @@ def train(cfg: TrainPipelineConfig):
         "id_coeff": 1e-3,
     }
 
-    cfg.validate()
     # ---------------------------------------------------------
     # distributed mode flags
     # ---------------------------------------------------------
