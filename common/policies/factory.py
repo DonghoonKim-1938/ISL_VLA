@@ -24,16 +24,8 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecis
 
 from common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from common.datasets.utils import dataset_to_policy_features
-from common.envs.configs import EnvConfig
-from common.envs.utils import env_to_policy_features
-from common.policies.act.configuration_act import ACTConfig
-from common.policies.diffusion.configuration_diffusion import DiffusionConfig
 from common.policies.pi0.configuration_pi0 import PI0Config
-from common.policies.pi0fast.configuration_pi0fast import PI0FASTConfig
 from common.policies.pretrained import PreTrainedPolicy
-from common.policies.smolvla.configuration_smolvla import SmolVLAConfig
-from common.policies.tdmpc.configuration_tdmpc import TDMPCConfig
-from common.policies.vqbet.configuration_vqbet import VQBeTConfig
 from common.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from common.utils.adapter_utils import inject_adapters, load_adapters_as_expert
 from configs.policies import PreTrainedConfig

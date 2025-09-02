@@ -278,13 +278,13 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
         """
 
         # Vision tower (frozen or trainable)
-        vision_modules = self.vision_modules
+        vision_modules = self.vision_modules()
 
         # Language model (PaliGemma text encoder)
-        lang_modules = self.lang_modules
+        lang_modules = self.lang_modules()
 
         # Action generator (Gemma expert + projection / MLP blocks)
-        action_modules = self.action_modules
+        action_modules = self.action_modules()
 
         # Compute L2 norms
         vision_param_norm_sq = 0.0
@@ -317,17 +317,14 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
         return metrics
 
     @abc.abstractmethod
-    @property
     def vision_modules(self) -> list[str]:
         raise NotImplementedError
 
     @abc.abstractmethod
-    @property
     def lang_modules(self) -> list[str]:
         raise NotImplementedError
 
     @abc.abstractmethod
-    @property
     def action_modules(self) -> list[str]:
         raise NotImplementedError
 

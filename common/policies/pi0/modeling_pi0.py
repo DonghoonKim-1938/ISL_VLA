@@ -94,6 +94,24 @@ class PI0Policy(PreTrainedPolicy):
     def get_output_embeddings(self) -> nn.Module:
         return self.model.get_output_embeddings()
 
+    def vision_modules(self) -> list[str]:
+        return [self.model.paligemma_with_expert.paligemma.vision_tower]
+
+    def language_modules(self) -> list[str]:
+        return [self.model.paligemma_with_expert.paligemma.language_model]
+
+    def action_modules(self) -> list[str]:
+        return [
+            self.model.paligemma_with_expert.gemma_expert,
+            self.model.state_proj,
+            self.model.action_in_proj,
+            self.model.action_out_proj,
+            self.model.action_time_mlp_in,
+            self.model.action_time_mlp_out,
+        ]
+
+
+
     # ---------------------------------------------------------
     # Component-wise norm helpers (vision, language, action generator)
     # ---------------------------------------------------------

@@ -40,7 +40,9 @@ from common.utils.model_utils import (
     aloha_gripper_from_angular_inv,
     pad_vector,
     create_sinusoidal_pos_embedding,
-    make_att_2d_masks, resize_with_pad, aloha_gripper_from_angular
+    make_att_2d_masks,
+    resize_with_pad,
+    aloha_gripper_from_angular
 )
 
 # Matches ".soNNN", optionally followed by "-something", up to the "_buffer_" marker
@@ -200,15 +202,12 @@ class SmolVLAPolicy(PreTrainedPolicy):
             ACTION: deque(maxlen=self.config.n_action_steps),
         }
 
-    @property
     def vision_modules(self) -> list[str]:
         return [self.model.vlm_with_expert.vlm.model.vision_model]
 
-    @property
     def language_modules(self) -> list[str]:
         return [self.model.vlm_with_expert.vlm.model.text_model]
 
-    @property
     def action_modules(self) -> list[str]:
         return [
             self.model.vlm_with_expert.lm_expert,
