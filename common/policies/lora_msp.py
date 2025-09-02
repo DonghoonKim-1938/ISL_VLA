@@ -16,8 +16,8 @@ class LoraMSPConfig(LoraConfig):
     layer_type: str = "lora_msp"
     target_threshold: float = 0.9
 
-    use_spec_loss: bool = True
-    use_modular_loss: bool = True
+    use_spec_loss: bool = False
+    use_modular_loss: bool = False
 
     router_weight_update: str = "vanilla"
 
@@ -150,8 +150,11 @@ class LoraMSPLinear(LoraLinear):
         id_reg = torch.norm(torch.matmul(self.A, A_t) - self.id_Sigma) + torch.norm(torch.matmul(B_t, self.B) - self.id_Sigma)
 
         self._fill_cache(router_logits, gates, residual, id_reg, top_counts, detach=self.track_router_stats)
+
         self.update_router_logit_ema(router_logits)
-        self.update_router_weight_ema(self.router.weight)
+        if self.update_router_weight_ema:
+            self.update_router_weight_ema(self.router.weight)
+
         return base_out + scaled_lora_out
 
     def compute_balance_loss(self) -> torch.Tensor:
@@ -196,14 +199,40 @@ class LoraMSPLinear(LoraLinear):
         ground_rank = self.cfg.num_experts * self.cfg.r
         target_rank = self._last_top_counts
 
-        ground_vals, _ = torch.topk(self._last_router_logits, ground_rank)
-        target_vals, _ = torch.topk(self._last_router_logits, target_rank)
+        ground_vals, target_vals = self._topk_vals(ground_rank, target_rank)
 
         denom = (target_vals ** 2).sum()
         num = (ground_vals ** 2).sum()
 
         E = torch.clamp(num / (denom+1e-9), min=0.0, max=1.0)
         return 1 - E
+
+    def _topk_vals(
+            self,
+            ground_rank: int | torch.Tensor,
+            target_rank: int | torch.Tensor,
+    ) -> List[torch.Tensor]:
+        logits = self._last_router_logits
+        B, S, R = logits.shape
+
+        masked_vals = []
+        for r in [ground_rank, target_rank]:
+            if isinstance(r, int):
+                r= torch.full((B, S), r, device=logits.device, dtype=torch.long)
+
+            max_k = r.max().item()  # 전체 중 가장 큰 k
+
+            topk_vals, topk_idx = torch.topk(logits, k=max_k, dim=-1)  # (B, S, max_k)
+
+            arange = torch.arange(max_k, device=logits.device).view(1, 1, -1)  # (1,1,max_k)
+            valid_mask = arange < r.unsqueeze(-1)  # (B,S,max_k)
+
+            masked_logits = torch.zeros_like(logits)
+            masked_logits.scatter_(-1, topk_idx, topk_vals * valid_mask)
+
+            masked_vals.append(masked_logits)
+
+        return masked_vals
 
     def compute_mod_loss(self, weight: torch.Tensor = 1) -> torch.Tensor:
         if self.cfg.use_modular_loss:
