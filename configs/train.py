@@ -21,7 +21,6 @@ import draccus
 from huggingface_hub import hf_hub_download
 from huggingface_hub.errors import HfHubHTTPError
 
-from common import envs
 from common.optim import OptimizerConfig
 from common.optim.schedulers import LRSchedulerConfig
 from common.policies.extensions import ExtendedConfig
@@ -39,7 +38,6 @@ class TrainPipelineConfig(HubMixin):
     test_dataset: DatasetConfig | None = None
     dataset: DatasetConfig | None = None
     method: ExtendedConfig | None = None
-    env: envs.EnvConfig | None = None
     policy: PreTrainedConfig | None = None
     # Set `dir` to where you would like to save all of the run outputs. If you run another training session
     # with the same value for `dir` its contents will be overwritten unless you set `resume` to true.
@@ -51,7 +49,6 @@ class TrainPipelineConfig(HubMixin):
     # regardless of what's provided with the training command at the time of resumption.
     resume: bool = False
     # `seed` is used for training (eg: model initialization, dataset shuffling)
-    # AND for the evaluation environments.
     seed: int | None = 1000
     # Number of workers for the dataloader.
     num_workers: int = 4
@@ -98,10 +95,7 @@ class TrainPipelineConfig(HubMixin):
             self.checkpoint_path = policy_path.parent if self.checkpoint_path is None else self.checkpoint_path
 
         if not self.job_name:
-            if self.env is None:
-                self.job_name = f"{self.policy.type}"
-            else:
-                self.job_name = f"{self.env.type}_{self.policy.type}"
+            self.job_name = f"{self.policy.type}"
 
         if not self.resume and isinstance(self.output_dir, Path) and self.output_dir.is_dir():
             raise FileExistsError(
