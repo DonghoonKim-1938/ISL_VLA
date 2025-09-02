@@ -40,7 +40,6 @@ from common.datasets.backward_compatibility import (
     BackwardCompatibilityError,
     ForwardCompatibilityError,
 )
-from common.robot_devices.robots.utils import Robot
 from common.utils.utils import is_valid_numpy_dtype_string
 from configs.types import DictLike, FeatureType, PolicyFeature
 
@@ -386,17 +385,6 @@ def get_hf_features_from_features(features: dict) -> datasets.Features:
             raise ValueError(f"Corresponding feature is not valid: {ft}")
 
     return datasets.Features(hf_features)
-
-
-def get_features_from_robot(robot: Robot, use_videos: bool = True) -> dict:
-    camera_ft = {}
-    if robot.cameras:
-        camera_ft = {
-            key: {"dtype": "video" if use_videos else "image", **ft}
-            for key, ft in robot.camera_features.items()
-        }
-    return {**robot.motor_features, **camera_ft, **DEFAULT_FEATURES}
-
 
 def dataset_to_policy_features(features: dict[str, dict]) -> dict[str, PolicyFeature]:
     # TODO(aliberts): Implement "type" in dataset features and simplify this

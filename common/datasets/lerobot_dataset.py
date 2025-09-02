@@ -48,7 +48,6 @@ from common.datasets.utils import (
     embed_images,
     get_delta_indices,
     get_episode_data_index,
-    get_features_from_robot,
     get_hf_features_from_features,
     get_safe_version,
     hf_transform_to_torch,
@@ -72,7 +71,6 @@ from common.datasets.video_utils import (
     get_safe_default_codec,
     get_video_info,
 )
-from common.robot_devices.robots.utils import Robot
 
 CODEBASE_VERSION = "v2.1"
 
@@ -305,7 +303,7 @@ class LeRobotDatasetMetadata:
         repo_id: str,
         fps: int,
         root: str | Path | None = None,
-        robot: Robot | None = None,
+        robot= None,
         robot_type: str | None = None,
         features: dict | None = None,
         use_videos: bool = True,
@@ -317,15 +315,7 @@ class LeRobotDatasetMetadata:
 
         obj.root.mkdir(parents=True, exist_ok=False)
 
-        if robot is not None:
-            features = get_features_from_robot(robot, use_videos)
-            robot_type = robot.robot_type
-            if not all(cam.fps == fps for cam in robot.cameras.values()):
-                logging.warning(
-                    f"Some cameras in your {robot.robot_type} robot don't have an fps matching the fps of your dataset."
-                    "In this case, frames from lower fps cameras will be repeated to fill in the blanks."
-                )
-        elif features is None:
+        if features is None:
             raise ValueError(
                 "Dataset features must either come from a Robot or explicitly passed upon creation."
             )
@@ -992,7 +982,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
         repo_id: str,
         fps: int,
         root: str | Path | None = None,
-        robot: Robot | None = None,
         robot_type: str | None = None,
         features: dict | None = None,
         use_videos: bool = True,
@@ -1007,7 +996,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
             repo_id=repo_id,
             fps=fps,
             root=root,
-            robot=robot,
+            robot=None,
             robot_type=robot_type,
             features=features,
             use_videos=use_videos,

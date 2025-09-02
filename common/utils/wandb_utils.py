@@ -34,8 +34,6 @@ def cfg_to_group(cfg: TrainPipelineConfig, return_list: bool = False) -> list[st
         f"test_dataset:{cfg.test_dataset.repo_id}",
         f"seed:{cfg.seed}",
     ]
-    if cfg.env is not None:
-        lst.append(f"env:{cfg.env.type}")
     return lst if return_list else "-".join(lst)
 
 
@@ -63,7 +61,7 @@ class WandBLogger:
         self.cfg = cfg.wandb
         self.log_dir = cfg.output_dir
         self.job_name = cfg.job_name
-        self.env_fps = cfg.env.fps if cfg.env else None
+        self.env_fps = None
         self._group = cfg_to_group(cfg)
 
         # Set up WandB.

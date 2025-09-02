@@ -95,7 +95,6 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
 def make_policy(
     cfg: PreTrainedConfig,
     ds_meta: LeRobotDatasetMetadata | None = None,
-    env_cfg: EnvConfig | None = None
 ) -> nn.Module:
     """Make an instance of a policy class.
 
@@ -117,22 +116,12 @@ def make_policy(
     Returns:
         PreTrainedPolicy: _description_
     """
-    if bool(ds_meta) == bool(env_cfg):
-        raise ValueError("Either one of a dataset metadata or a sim env must be provided.")
-
     # NOTE: Currently, if you try to run vqbet with mps backend, you'll get this error.
-    # TODO(aliberts, rcadene): Implement a check_backend_compatibility in policies?
     # NotImplementedError: The operator 'aten::unique_dim' is not currently implemented for the MPS device. If
     # you want this op to be added in priority during the prototype phase of this feature, please comment on
     # https://github.com/pytorch/pytorch/issues/77764. As a temporary fix, you can set the environment
     # variable `PYTORCH_ENABLE_MPS_FALLBACK=1` to use the CPU as a fallback for this op. WARNING: this will be
     # slower than running natively on MPS.
-    if cfg.type == "vqbet" and cfg.device == "mps":
-        raise NotImplementedError(
-            "Current implementation of VQBeT does not support `mps` backend. "
-            "Please use `cpu` or `cuda` backend."
-        )
-
     policy_cls = get_policy_class(cfg.type)
 
     kwargs = {}
@@ -146,7 +135,7 @@ def make_policy(
                 "rather than a dataset. Normalization modules inside the policy will have infinite values "
                 "by default without stats from a dataset."
             )
-        features = env_to_policy_features(env_cfg)
+        raise Exception("NO ENVIRONMENT")
 
     cfg.output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
     cfg.input_features = {key: ft for key, ft in features.items() if key not in cfg.output_features}

@@ -51,7 +51,7 @@ class LoraMSPLinear(LoraLinear):
         self.router = nn.Linear(in_f, cfg.num_experts * cfg.r, bias=False, dtype=base.weight.dtype)
         nn.init.kaiming_uniform_(self.router.weight, a=math.sqrt(5))
 
-        self.register_buffer("router_weight_ma", torch.zeros((cfg.num_experts * cfg.r, in_f), dtype=self.router.weight.dtype, device=self.router.device))
+        self.register_buffer("router_weight_ma", torch.zeros((cfg.num_experts * cfg.r, in_f), dtype=self.router.weight.dtype, device=self.router.weight.device))
         self.register_buffer("router_logit_ma", torch.zeros(self.router.weight.shape[0], dtype=self.router.weight.dtype, device=self.router.weight.device))
         self.momentum = 0.99
         self.temperature = 0.07

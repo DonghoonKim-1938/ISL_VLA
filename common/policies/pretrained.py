@@ -281,7 +281,7 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
         vision_modules = self.vision_modules()
 
         # Language model (PaliGemma text encoder)
-        lang_modules = self.lang_modules()
+        lang_modules = self.language_modules()
 
         # Action generator (Gemma expert + projection / MLP blocks)
         action_modules = self.action_modules()
@@ -321,7 +321,7 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def lang_modules(self) -> list[str]:
+    def language_modules(self) -> list[str]:
         raise NotImplementedError
 
     @abc.abstractmethod
