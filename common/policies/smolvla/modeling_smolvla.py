@@ -1,6 +1,5 @@
 #!/usr/bin/env python
-from collections import deque
-
+#
 # Copyright 2025 HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,6 +16,7 @@ from collections import deque
 import math
 import os
 import re
+from collections import deque
 
 import safetensors
 import torch
