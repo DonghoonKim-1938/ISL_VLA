@@ -13,8 +13,11 @@ class ExtendedConfig:
     target_keywords: list[str] = field(default_factory=lambda: ["all-linear"])
     pretrained_expert: bool = False
     lora_cfg: Optional[LoraConfig] = None
+
     adapter_file_path: Optional[list[str | Path]] = None
     aux_loss_cfg: Optional[dict] = None
+
+    expert_source: Optional[str] = "lora"
 
     def match_cfg(self):
         if self.core in ["vanilla"]:

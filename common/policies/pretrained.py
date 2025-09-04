@@ -30,6 +30,7 @@ from transformers import PreTrainedModel as HFPreTrainedModel
 
 from common.constants import OBS_ROBOT, ACTION
 from common.policies.extensions import ExtendedConfig
+from common.policies.lora_msp import LoraMSPLinear
 from common.utils.hub import HubMixin
 from common.utils.model_utils import *
 from common.utils.model_utils import resize_with_pad
@@ -249,8 +250,8 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
         return aux_loss, loss_dict
 
     def clear_cache(self):
-        for module in self.children():
-            if hasattr(module, "clear_cache"):
+        for module in self.modules():
+            if module is not self and hasattr(module, "clear_cache"):
                 module.clear_cache()
 
     @abc.abstractmethod
@@ -370,6 +371,13 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
             img_masks.append(mask)
 
         return images, img_masks
+
+    def plot_topk(self):
+        for module in self.modules():
+            if module is not self and isinstance(module, LoraMSPLinear):
+                module.plot_k()
+                break
+
 
 class PreTrainedFlowMatching(nn.Module):
     def __init__(self, config: PreTrainedConfig):
