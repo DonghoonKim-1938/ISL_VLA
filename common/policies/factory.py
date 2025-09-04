@@ -27,7 +27,7 @@ from common.datasets.utils import dataset_to_policy_features
 from common.policies.pi0.configuration_pi0 import PI0Config
 from common.policies.pretrained import PreTrainedPolicy
 from common.policies.smolvla.configuration_smolvla import SmolVLAConfig
-from common.utils.adapter_utils import inject_adapters, load_adapters_as_expert
+from common.utils.adapter_utils import inject_adapters, load_adapters_as_expert, load_adapters_as_moe, load_adapters
 from configs.policies import PreTrainedConfig
 from configs.types import FeatureType
 from common.policies.extensions import ExtendedConfig
@@ -40,30 +40,11 @@ from common.utils.model_utils import freeze_non_adapters
 
 def get_policy_class(name: str) -> PreTrainedPolicy:
     """Get the policy's class and config class given a name (matching the policy class' `name` attribute)."""
-    if name == "tdmpc":
-        from common.policies.tdmpc.modeling_tdmpc import TDMPCPolicy
 
-        return TDMPCPolicy
-    elif name == "diffusion":
-        from common.policies.diffusion.modeling_diffusion import DiffusionPolicy
-
-        return DiffusionPolicy
-    elif name == "act":
-        from common.policies.act.modeling_act import ACTPolicy
-
-        return ACTPolicy
-    elif name == "vqbet":
-        from common.policies.vqbet.modeling_vqbet import VQBeTPolicy
-
-        return VQBeTPolicy
-    elif name == "pi0":
+    if name == "pi0":
         from common.policies.pi0.modeling_pi0 import PI0Policy
 
         return PI0Policy
-    elif name == "pi0fast":
-        from common.policies.pi0fast.modeling_pi0fast import PI0FASTPolicy
-
-        return PI0FASTPolicy
 
     elif name == "smolvla":
         from common.policies.smolvla.modeling_smolvla import SmolVLAPolicy
@@ -74,18 +55,8 @@ def get_policy_class(name: str) -> PreTrainedPolicy:
 
 
 def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
-    if policy_type == "tdmpc":
-        return TDMPCConfig(**kwargs)
-    elif policy_type == "diffusion":
-        return DiffusionConfig(**kwargs)
-    elif policy_type == "act":
-        return ACTConfig(**kwargs)
-    elif policy_type == "vqbet":
-        return VQBeTConfig(**kwargs)
-    elif policy_type == "pi0":
+    if policy_type == "pi0":
         return PI0Config(**kwargs)
-    elif policy_type == "pi0fast":
-        return PI0FASTConfig(**kwargs)
     elif policy_type == "smolvla":
         return SmolVLAConfig(**kwargs)
     else:
@@ -191,14 +162,14 @@ def wrap_policy(
             logging.info("Injected QLoRA modules")
 
     elif method == "lora_moe":
-        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_moe_cfg") else LoraMoEConfig()
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraMoEConfig()
         train_router_loss = True
 
         if is_master:
             logging.info("Injected LoRA-MoE modules")
 
     elif method == "qlora_moe":
-        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_moe_cfg") else LoraMoEConfig()
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraMoEConfig()
         lora_cfg_obj.quantize = True
         train_router_loss = True
 
@@ -227,8 +198,12 @@ def wrap_policy(
         policy.train_aux_loss = True
 
     if cfg.adapter_file_path:
-        assert lora_cfg_obj.num_experts == len(cfg.adapter_file_path)
-        res = load_adapters_as_expert(policy, cfg.adapter_file_path)
+        if cfg.expert_source == 'lora':
+            assert lora_cfg_obj.num_experts == len(cfg.adapter_file_path)
+            res = load_adapters_as_expert(policy, cfg.adapter_file_path)
+        elif cfg.expert_source == 'lora_moe':
+            assert len(cfg.adapter_file_path) == 1
+            res = load_adapters_as_moe(policy, cfg.adapter_file_path)
     else:
         res = f"Not Injecting Adapters"
 

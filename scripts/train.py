@@ -21,6 +21,7 @@ import torch.distributed as dist
 from common.datasets.make_dataloader import make_dataloader
 from common.policies.extensions import ExtendedConfig
 from common.policies.lora import LoraConfig
+from common.policies.lora_moe import LoraMoEConfig
 from common.policies.lora_msp import LoraMSPConfig
 from common.utils.train_utils import batch_to_device
 from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker
@@ -81,6 +82,8 @@ def update_policy(
         grad_clip_norm,
         error_if_nonfinite=False,
     )
+
+    policy.plot_topk()
 
     # Optimizer's gradients are already unscaled, so scaler.step does not unscale them,
     # although it still skips optimizer.step() if the gradients contain infs or NaNs.
@@ -163,21 +166,35 @@ def train(cfg: TrainPipelineConfig):
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
     cfg.method = ExtendedConfig()
-    cfg.method.lora_cfg = LoraMSPConfig(
+    cfg.method.core = 'lora_moe'
+    cfg.method.lora_cfg = LoraMoEConfig(
         r=32,
         alpha=64,
-        quantize=True,
+        quantize=False,
         num_experts=4,
-        target_threshold=0.9,
-        use_spec_loss=True,
+        routing='top1'
     )
+    # cfg.method.lora_cfg = LoraMSPConfig(
+    #     r=32,
+    #     alpha=64,
+    #     quantize=False,
+    #     num_experts=4,
+    #     target_threshold=0.9,
+    #     use_spec_loss=False,
+    #     use_modular_loss=False,
+    #     use_id_loss=False,
+    #     router_projection=True,
+    #     routing='top1'
+    # )
     cfg.method.target_keywords = ["all-linear"]
-    cfg.method.core = "lora_msp"
+    # cfg.method.adapter_file_path = [
+    #     '/result/pi0_lora_r32_openthepot/checkpoints/030000/pretrained_model/adapters.safetensors',
+    #     '/result/pi0_lora_r32_pickplace/030000/pretrained_model/adapters.safetensors',
+    #     '/result/pi0_lora_r32_pourtheblock/030000/pretrained_model/adapters.safetensors',
+    #     '/result/pi0_lora_r32_pushthebutton/030000/pretrained_model/adapters.safetensors'
+    # ]
     cfg.method.adapter_file_path = [
-        '/result/pi0_lora_r32_openthepot/checkpoints/030000/pretrained_model/adapters.safetensors',
-        '/result/pi0_lora_r32_pickplace/030000/pretrained_model/adapters.safetensors',
-        '/result/pi0_lora_r32_pourtheblock/030000/pretrained_model/adapters.safetensors',
-        '/result/pi0_lora_r32_pushthebutton/030000/pretrained_model/adapters.safetensors'
+        '/result/pi0_lora_moe_multitask_r32/checkpoints/030000/pretrained_model/adapters.safetensors'
     ]
     cfg.gradient_checkpointing = True
     cfg.method.aux_loss_cfg = {
@@ -187,6 +204,7 @@ def train(cfg: TrainPipelineConfig):
         "mod_coeff": 1e-3,
         "id_coeff": 1e-3,
     }
+    cfg.method.expert_source = 'lora_moe'
 
     # ---------------------------------------------------------
     # distributed mode flags

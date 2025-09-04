@@ -18,7 +18,9 @@ import os
 import re
 from glob import glob
 from pathlib import Path
+from typing import Optional
 
+import numpy as np
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 from termcolor import colored
 
@@ -166,6 +168,18 @@ class WandBLogger:
 
         for k, v in processed.items():
             self._wandb.log({f"{mode}/{k}": v}, step=step)
+
+    def log_hist(
+        self,
+        values: np.ndarray,
+        step: int,
+        mode: str = "train",
+        title: Optional[str] = None,
+    ):
+        if mode not in {"train", "eval"}:
+            raise ValueError(mode)
+
+        self._wandb.log({f"{mode}/{title}": self._wandb.Histogram(values)}, step=step)
 
     def log_video(self, video_path: str, step: int, mode: str = "train"):
         if mode not in {"train", "eval"}:

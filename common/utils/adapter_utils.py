@@ -197,3 +197,43 @@ def _inject_layers(
         wrapped.append(name)
 
     return wrapped
+
+def load_adapters_as_moe(
+    model: PreTrainedPolicy,
+    adapter_file_path: List[str],
+    device: str | torch.device = "cpu",
+):
+    adapter_file = adapter_file_path[0]
+    state = sft.load_file(str(adapter_file), device=str(device))
+
+    res = []
+
+    replaced = 0
+    missing_keys = []
+    used_keys = []
+
+    for name, module in model.named_modules():
+       if isinstance(module, LoraLinear):
+           missing, found = module.load_adapter_as_moe(name, state)
+           missing_keys += missing
+           if found:
+               used_keys += [f"{name}.A", f"{name}.B", f"{name}.router.weight"]
+               replaced += 1
+
+    unexpected_keys = [k for k in state.keys() if k not in used_keys]
+
+    if missing_keys:
+        print(f"[WARN] Missing keys: {missing_keys}")
+    if unexpected_keys:
+        print(f"[WARN] Unexpected keys: {unexpected_keys}")
+
+    if replaced == 0:
+        raise Exception("No matching LoRA modules found in state_dict!")
+    else:
+        res += [f"[INFO] Successfully injected LoRA into {replaced} LoraLinear layers in {adapter_file}."]
+
+    gc.collect()
+    if device != torch.device('cpu'):
+        torch.cuda.empty_cache()
+
+    return res

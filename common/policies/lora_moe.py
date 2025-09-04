@@ -19,18 +19,8 @@ from common.policies.lora import LoraLinear, LoraConfig
 class LoraMoEConfig(LoraConfig):
     layer_type: str = "lora_moe"
 
-    r: int = 8  # low‑rank dim per expert
-    alpha: int = 16  # scaling factor
     num_experts: int = 4  # number of LoRA experts
-    dropout: float = 0.05  # applied to input of adapters
-    fan_in_fan_out: bool = False  # set True if base weight is transposed
     routing: str = "weighted"   # "weighted", "top1", "top2"
-    quantize: bool = False
-
-    quant_type: str = 'fp4'
-    compute_dtype: torch.dtype = torch.bfloat16
-    compress_statistics: bool = False
-    quant_storage: torch.dtype = torch.uint8
 
     @property
     def scale(self) -> float:
@@ -99,16 +89,16 @@ class LoraMoELinear(LoraLinear):
         self._last_gates = None
 
     def compute_balance_loss(self) -> torch.Tensor:
-        if self._gates is not None:
-            E = self._gates.shape[-1]
+        if self._last_gates is not None:
+            E = self._last_gates.shape[-1]
         else:
             return
 
         # p_j : 확률 평균
-        p = self._gates.mean(dim=tuple(range(self._gates.dim() - 1)))  # (E,)
+        p = self._last_gates.mean(dim=tuple(range(self._last_gates.dim() - 1)))  # (E,)
 
         # f_j : 실제 토큰 분포 (hard one‑hot)
-        hard = F.one_hot(self._gates.argmax(-1), E)
+        hard = F.one_hot(self._last_gates.argmax(-1), E)
         f = hard.float().mean(dim=tuple(range(hard.dim() - 1)))
 
         loss = (f * p).sum() * E  # N·(f·p)
@@ -180,3 +170,34 @@ class LoraMoELinear(LoraLinear):
         lora_mix = weighted.sum(dim=-2)
 
         return lora_mix
+
+    def load_adapter_as_moe(
+        self,
+        name: str,
+        state: dict[str, torch.Tensor],
+        train_experts: bool = True,
+    ) -> Tuple[List[str | None], bool]:
+        A_key = f"{name}.A"
+        B_key = f"{name}.B"
+        router_key = f"{name}.router.weight"
+
+        found = True
+        missing = []
+
+        if A_key not in state:
+            missing.append(A_key)
+            found = False
+        if B_key not in state:
+            missing.append(B_key)
+            found = False
+        if found:
+            with torch.no_grad():
+                self.A = nn.Parameter(state[A_key].to(self.A.device))
+                self.B = nn.Parameter(state[B_key].to(self.A.device))
+                self.router.weight = nn.Parameter(state[router_key].to(self.A.device))
+
+        self.A.requires_grad_(train_experts)
+        self.B.requires_grad_(train_experts)
+        self.router.weight.requires_grad_(True)
+
+        return missing, found
