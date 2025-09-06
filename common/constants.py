@@ -59,6 +59,8 @@ TASK_LIST = [
     "pick the corn and put it to the basket",
     "open the pot",
     "pour the block into the basket",
+    "press the button",
+    "pick and place the grape in the basket",
     "push the button",
 ]
 
