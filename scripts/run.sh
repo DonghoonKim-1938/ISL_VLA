@@ -6,7 +6,7 @@ export TOKENIZERS_PARALLELISM=false
 BASELINE="pi0"
 DATA_ROOT_DIR="piper_multitask"
 
-METHOD="lora_msp_r32_moe_start_0.99_"
+METHOD="lora_msp_r32_moe_start_0.9"
 DATASET="multitask"
 
 CUDA_VISIBLE_DEVICES=${DEVICES} \
