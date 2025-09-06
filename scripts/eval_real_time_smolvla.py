@@ -71,6 +71,42 @@ def create_batch(piper, table_rs_cam, wrist_rs_cam, use_devices, task, use_end_p
             'observation.images.wrist': random_piper_image(),
             'task': [task],
         }
+#added
+def make_policy_batch_like_predict_action(batch_np: dict, device, use_amp=False, task="", robot_type=""):
+    # batch_np: create_batch가 만든 dict (np.ndarray/torch.Tensor 혼재 가능)
+    policy_batch = {}
+
+    for name, val in batch_np.items():
+        # 넘파이는 텐서화
+        if isinstance(val, np.ndarray):
+            t = torch.from_numpy(val)
+        elif isinstance(val, torch.Tensor):
+            t = val
+        else:
+            # 문자열 등은 아래서 처리
+            policy_batch[name] = val
+            continue
+
+        # 이미지면 [0,1] & HWC->CHW
+        if "image" in name:
+            if t.dtype != torch.float32:
+                t = t.to(torch.float32)
+            # 값이 [0..255]라고 가정하고 정규화
+            t = t / 255.0
+            # HWC -> CHW (혹시 이미 CHW면 permute가 맞는지 확인)
+            if t.ndim == 3 and t.shape[-1] in (1,3):
+                t = t.permute(2, 0, 1).contiguous()
+
+        # 배치 차원 부여
+        if t.ndim == 3 or t.ndim == 1:  # (C,H,W) or (D,)
+            t = t.unsqueeze(0)
+        policy_batch[name] = t.to(device, non_blocking=True)
+
+    # 메타 입력 통일
+    policy_batch["task"] = task or ""
+    policy_batch["robot_type"] = robot_type or ""
+    return policy_batch
+
 
 def safe_serialize(x: Any):
     if x is None:
@@ -214,6 +250,10 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
     fig_2d, ax_2d = plt.subplots(4, 2, figsize=[25, 15])
     fig_3d, ax_3d = plt.subplots(subplot_kw={'projection': '3d'}, figsize=[25, 15])
 
+    #debug
+    flag1 = True
+    flag2 = True
+
 
     ###############
     # EVAL LOOP
@@ -233,6 +273,13 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
 
         if cfg.use_devices and task['task1 : open the pot']:
             set_zero_configuration(piper)
+
+            stt = read_end_pose_msg(piper)
+            end_pose_data = stt[0][:6].tolist()
+            gripper_data = [torch.tensor(60000), GRIPPER_EFFORT]
+            ctrl_end_pose(piper, end_pose_data, gripper_data) if piper is not None else None
+            print('gripper open!')
+
             time.sleep(3)
             cfg.task = "open the pot"
             logging.info(cfg.task)
@@ -241,22 +288,36 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
             continue
         if cfg.use_devices and task['task2 : pour the block']:
             set_zero_configuration(piper)
+
+            stt = read_end_pose_msg(piper)
+            end_pose_data = stt[0][:6].tolist()
+            gripper_data = [torch.tensor(60000), GRIPPER_EFFORT]
+            ctrl_end_pose(piper, end_pose_data, gripper_data) if piper is not None else None
+            print('gripper open!')
+
             time.sleep(3)
             cfg.task = "pour the block into the basket"
             logging.info(cfg.task)
             policy.reset()
             task['task2 : pour the block'] = False
             continue
-        if cfg.use_devices and task['task3 : press the button']:
+        if cfg.use_devices and task['task3 : push the button']:
             set_zero_configuration(piper)
             time.sleep(3)
-            cfg.task = "press the button"
+            cfg.task = "push the button"
             logging.info(cfg.task)
             policy.reset()
-            task['task3 : press the button'] = False
+            task['task3 : push the button'] = False
             continue
         if cfg.use_devices and task['task4 : pick and place']:
             set_zero_configuration(piper)
+
+            stt = read_end_pose_msg(piper)
+            end_pose_data = stt[0][:6].tolist()
+            gripper_data = [torch.tensor(60000), GRIPPER_EFFORT]
+            ctrl_end_pose(piper, end_pose_data, gripper_data) if piper is not None else None
+            print('gripper open!')
+
             time.sleep(3)
             cfg.task = "pick and place the grape in the basket"
             logging.info(cfg.task)
@@ -273,8 +334,24 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(device, non_blocking=True)
 
+        if flag1:
+            first_batch = batch
+            flag1 = False
+
+
+        # if cfg.use_devices and task['task1 : open the pot']:
+        #     if flag1:
+        #         batch = first_batch
+        #         flag1=False
+        #     print("batch first")
+        #     policy.reset()
+        #     task['task1 : open the pot'] = False
+        #     continue
+
+
         # infer data
         action_pred = policy.select_action(batch).squeeze()
+        # action_pred = policy.select_action(first_batch).squeeze()
         # if len(policy._action_queue) < cfg.infer_chunk:
         #     policy.reset()
 
@@ -282,7 +359,7 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
         # actuate robot
         end_pose_data = action_pred[:6].cpu().to(dtype=int).tolist()
         gripper_data = [action_pred[6].cpu().to(dtype=int), GRIPPER_EFFORT]
-     #   print(action_pred)
+        # print(action_pred)
         ctrl_end_pose(piper, end_pose_data, gripper_data) if piper is not None else None
 
         # log data
