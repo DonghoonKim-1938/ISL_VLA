@@ -17,17 +17,15 @@ from common.utils.utils import (
     plot_trajectory,
     pretty_plot,
     log_time,
-    init_devices
-)
-from configs.eval_real_time_ours import EvalRealTimeOursPipelineConfig
-
-from common.utils.random_utils import set_seed
-from common.utils.utils import (
+    init_devices,
     get_safe_torch_device,
     init_logging,
     format_big_number,
     init_keyboard_listener
 )
+from configs.eval_real_time_ours import EvalRealTimeOursPipelineConfig
+
+from common.utils.random_utils import set_seed
 from configs import parser
 
 from common.policies.factory import make_policy, wrap_policy
@@ -67,7 +65,7 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
         alpha=64,
         quantize=False,
         num_experts=4,
-        target_threshold=0.99,
+        target_threshold=0.9,
         use_spec_loss=False,
         use_modular_loss=False,
         use_id_loss=False,
@@ -76,7 +74,7 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
     )
     cfg.method.target_keywords = ["all-linear"]
     cfg.method.adapter_file_path = [
-        '/home/minji/Desktop/data/finetuned_model/MoE_LoRa_paper/multi/pi0/lora_msp/pi0_lora_msp_r32_moe_start_0.99__multitask/025000/pretrained_model/adapters.safetensors'
+        '/result/pi0_test/checkpoints/000001/pretrained_model/adapters.safetensors'
     ]
     cfg.method.is_train = False
 
@@ -141,7 +139,6 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
     )
     logging.info(res)
 
-
     ###############
     # LOG BEFORE EVAL
     ###############
@@ -149,8 +146,6 @@ def eval_real_time(cfg: EvalRealTimeOursPipelineConfig):
     num_total_params = sum(p.numel() for p in policy.parameters())
 
     logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
-    if cfg.env is not None:
-        logging.info(f"{cfg.env.task=}")
     logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
     if cfg.use_devices:

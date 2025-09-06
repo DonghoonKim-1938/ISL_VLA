@@ -128,6 +128,71 @@ def make_policy(
 
     return policy
 
+
+def _get_lora_cfg_obj(
+    policy: nn.Module,
+    cfg: ExtendedConfig,
+    method: str,
+    is_master: bool,
+    device: str | torch.device = "cpu",
+) -> Tuple[PreTrainedPolicy | nn.Module, bool, Optional[LoraConfig]]:
+    train_router_loss = False
+    lora_cfg_obj = None
+
+    if method == "train_linear_only":
+        policy.unfreeze_linear_layers()
+        policy = policy.to(device=device)
+        if is_master:
+            logging.info("Unfreezed Linear only")
+
+    elif method == "linear_probing":
+        policy.unfreeze_action_out_proj()
+        policy = policy.to(device=device)
+        if is_master:
+            logging.info("Unfreezed action output projection")
+
+    elif method == "lora":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_moe_cfg") else LoraConfig()
+        if is_master:
+            logging.info("Injected LoRA modules")
+
+    elif method == "qlora":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_moe_cfg") else LoraConfig()
+        lora_cfg_obj.quantize = True
+        if is_master:
+            logging.info("Injected QLoRA modules")
+
+    elif method == "lora_moe":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraMoEConfig()
+        train_router_loss = True
+
+        if is_master:
+            logging.info("Injected LoRA-MoE modules")
+
+    elif method == "qlora_moe":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraMoEConfig()
+        lora_cfg_obj.quantize = True
+        train_router_loss = True
+
+        if is_master:
+            logging.info("Injected QLoRA-MoE modules")
+
+    elif method =="lora_msp":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraMSPConfig()
+        train_router_loss = True
+
+        if is_master:
+            logging.info("Injected LoRA-MSP modules")
+
+    elif method == "vanilla":
+        if is_master:
+            logging.info("Using Vanilla model")
+
+    else:
+        raise NotImplementedError(f"{method} not implemented")
+
+    return policy, train_router_loss, lora_cfg_obj
+
 def wrap_policy(
     policy: PreTrainedPolicy,
     cfg: ExtendedConfig,
@@ -135,7 +200,7 @@ def wrap_policy(
     device: str | torch.device = "cpu",
 ) -> Tuple[nn.Module, List[str] | str]:
     method = cfg.core
-    policy, train_router_loss, lora_cfg_obj = get_lora_cfg_obj(policy, cfg, method, is_master, device)
+    policy, train_router_loss, lora_cfg_obj = _get_lora_cfg_obj(policy, cfg, method, is_master, device)
 
     if lora_cfg_obj is not None:
         policy, _ = inject_adapters(policy, lora_cfg_obj, target_keywords=cfg.target_keywords)
@@ -225,67 +290,3 @@ def dist_policy(
 
     else:
         raise NotImplementedError(f"{dist_mode} not implemented")
-
-def get_lora_cfg_obj(
-    policy: nn.Module,
-    cfg: ExtendedConfig,
-    method: str,
-    is_master: bool,
-    device: str | torch.device = "cpu",
-) -> Tuple[PreTrainedPolicy, bool, Optional[LoraConfig]]:
-    train_router_loss = False
-    lora_cfg_obj = None
-
-    if method == "train_linear_only":
-        policy.unfreeze_linear_layers()
-        policy = policy.to(device=device)
-        if is_master:
-            logging.info("Unfreezed Linear only")
-
-    elif method == "linear_probing":
-        policy.unfreeze_action_out_proj()
-        policy = policy.to(device=device)
-        if is_master:
-            logging.info("Unfreezed action output projection")
-
-    elif method == "lora":
-        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_moe_cfg") else LoraConfig()
-        if is_master:
-            logging.info("Injected LoRA modules")
-
-    elif method == "qlora":
-        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_moe_cfg") else LoraConfig()
-        lora_cfg_obj.quantize = True
-        if is_master:
-            logging.info("Injected QLoRA modules")
-
-    elif method == "lora_moe":
-        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraMoEConfig()
-        train_router_loss = True
-
-        if is_master:
-            logging.info("Injected LoRA-MoE modules")
-
-    elif method == "qlora_moe":
-        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraMoEConfig()
-        lora_cfg_obj.quantize = True
-        train_router_loss = True
-
-        if is_master:
-            logging.info("Injected QLoRA-MoE modules")
-
-    elif method =="lora_msp":
-        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraMSPConfig()
-        train_router_loss = True
-
-        if is_master:
-            logging.info("Injected LoRA-MSP modules")
-
-    elif method == "vanilla":
-        if is_master:
-            logging.info("Using Vanilla model")
-
-    else:
-        raise NotImplementedError(f"{method} not implemented")
-
-    return policy, train_router_loss, lora_cfg_obj
