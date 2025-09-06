@@ -220,13 +220,13 @@ class LoraMSPLinear(LoraLinear):
         if self._compute_spec_loss():
             return torch.tensor(0.0, dtype=self.dtype, device=self.A.device)
 
-        ground_rank = self.cfg.num_experts * self.cfg.r
+        ground_rank = torch.ones_like(self._last_top_counts) * (self.cfg.num_experts * self.cfg.r)
         target_rank = self._last_top_counts
 
         ground_vals, target_vals = self._topk_vals(ground_rank, target_rank)
 
-        denom = (target_vals ** 2).sum()
-        num = (ground_vals ** 2).sum()
+        num = (target_vals ** 2).sum()
+        denom = (ground_vals ** 2).sum()
 
         E = torch.clamp(num / (denom+1e-9), min=0.0, max=1.0)
         return 1 - E

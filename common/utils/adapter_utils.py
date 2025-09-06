@@ -153,15 +153,14 @@ def inject_adapters(
         filter_fn=filter_fn,
     )
 
+    adapter_names = get_adapter_names(layer_cls)
+
     # Keep track of adapter parameter names for lightweight checkpointing
     if wrapped:
-        adapter_names = [
-                            f"{w}.A" for w in wrapped
-                        ] + [
-                            f"{w}.B" for w in wrapped
-                        ] + [
-                            f"{w}.router.weight" for w in wrapped
-                        ]
+        adapter_param_names = []
+        for w in wrapped:
+            for adapter_name in adapter_names:
+                adapter_param_names.append(f"{w}.{adapter_name}")
         existing = getattr(model, "_adapter_param_names", set())
         model._adapter_param_names = set(existing).union(adapter_names)
 
@@ -237,3 +236,13 @@ def load_adapters_as_moe(
         torch.cuda.empty_cache()
 
     return res
+
+def get_adapter_names(layer_cls: Type[LoraLinear]) -> List[str]:
+    if layer_cls is LoraLinear:
+        return ["A", "B"]
+    elif layer_cls is LoraMSPLinear:
+        return ["A", "B", "router.weight","router_proj"]
+    elif layer_cls is LoraMoELinear:
+        return ["A", "B", "router.weight"]
+    else:
+        raise TypeError(f"Unknown layer class {layer_cls}")
