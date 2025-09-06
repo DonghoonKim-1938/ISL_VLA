@@ -15,8 +15,8 @@ CUDA_VISIBLE_DEVICES=${DEVICES} \
   ${CONDA_ENV_PATH} run -n ${CONDA_ENV_NAME} python ./scripts/eval_real_time.py \
     --policy.path=${BASELINE_PATH} \
     --adapter_path=${ADAPTER_PATH} \
-    --use_qlora=true \
+    --method.core="lora_msp" \
     --train_dataset.repo_id="/home/minji/Desktop/data/data_config/${DATA_ROOT_DIR}" \
     --train_dataset.root="/home/minji/Desktop/data/data_config/${DATA_ROOT_DIR}" \
     --use_devices=true \
-    --target_keywords='["q_proj","k_proj","v_proj"]' \
+    --target_keywords='["all-linear"]'
