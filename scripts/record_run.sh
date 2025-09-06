@@ -1,12 +1,12 @@
-for i in {500..500}
+for i in {20..59}
 do
 
-  python record.py \
+  python scripts/record.py \
   --dataset_path="/home/minji/Desktop/codes/lerobot/data" \
   --episode_num=$i \
   --episode_len=10 \
-  --task="open the pot" \
+  --task="push the button" \
   --fps=30 \
-  --recorded_by="gh" \
+  --recorded_by="ms" \
 
 done

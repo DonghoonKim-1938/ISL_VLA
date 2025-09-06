@@ -341,16 +341,33 @@ def init_keyboard_listener():
 
     event = {}
     event['stop recording'] = False
+    task = {}
+    task['task1 : open the pot'] = False
+    task['task2 : pour the block'] = False
+    task['task3 : push the button'] = False
+    task['task4 : pick and place'] = False
 
     def on_press(key):
         if key == keyboard.Key.esc:
             event['stop recording'] = True
             print("esc is pressed")
+        elif key == keyboard.KeyCode.from_char('1'):
+            task['task1 : open the pot'] = True
+            print("task1 : open the pot")
+        elif key == keyboard.KeyCode.from_char('2'):
+            task['task2 : pour the block'] = True
+            print("task2 : pour the block")
+        elif key == keyboard.KeyCode.from_char('3'):
+            task['task3 : push the button'] = True
+            print("task3 : push the button")
+        elif key == keyboard.KeyCode.from_char('4'):
+            task['task4 : pick and place'] = True
+            print("task4 : pick and place")
 
     listener = keyboard.Listener(on_press=on_press)
     listener.start()
 
-    return listener, event
+    return listener, event, task
 
 def is_ddp_master(use_ddp: bool, rank: int):
     return (not use_ddp) or (use_ddp and (rank == 0))
