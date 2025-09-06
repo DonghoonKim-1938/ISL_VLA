@@ -87,6 +87,20 @@ def create_batch(piper, exo_rs_cam, wrist_rs_cam, use_devices, task):
             'task': [task],
         }
 
+def _safe_serialize(x):
+    if x is None:
+        return None
+    if isinstance(x, Enum):
+        return x.value
+    if is_dataclass(x):
+        d = asdict(x)
+        return {k: _safe_serialize(v) for k, v in d.items()}
+    if isinstance(x, dict):
+        return {k: _safe_serialize(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_safe_serialize(v) for v in x]
+    return x  # 기본형/문자열 등
+
 
 @parser.wrap()
 def eval_main(cfg: EvalOursPipelineConfig):

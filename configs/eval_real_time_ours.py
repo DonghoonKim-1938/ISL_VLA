@@ -4,16 +4,12 @@ from dataclasses import dataclass, field
 from typing import Any
 from pathlib import Path
 import draccus
-from peft import LoraConfig
 
 from common import envs, policies  # noqa: F401
-from common.policies.lora_moe import LoraMoEConfig
-from common.policies.prefix_tuning import PrefixTuningConfig
-from common.policies.qlora import QLoRAConfig
-from common.policies.lora import LoraConfig
 from configs import parser
 from configs.default import DatasetConfig, EvalConfig, WandBConfig
 from configs.policies import PreTrainedConfig
+from common.policies.extensions import ExtendedConfig
 
 
 @dataclass
@@ -22,9 +18,9 @@ class EvalRealTimeOursPipelineConfig:
     # saved using `Policy.save_pretrained`. If not provided, the policy is initialized from scratch
     # (useful for debugging). This argument is mutually exclusive with `--config`.
     train_dataset: DatasetConfig
-    env: envs.EnvConfig | None = None
     eval: EvalConfig = field(default_factory=EvalConfig)
     policy: PreTrainedConfig | None = None
+    method: ExtendedConfig | None = None
     output_dir: Path | None = None
     job_name: str | None = None
     seed: int | None = 1000
@@ -47,10 +43,12 @@ class EvalRealTimeOursPipelineConfig:
     use_lora: bool | None = False
     use_prefix_tuning: bool | None = False
     use_lora_moe: bool | None = False
+    rank_size: int = 16
+    infer_chunk: int = 40
 
     # Adapter injection filtering: only layers whose names contain any of these keywords will be wrapped.
     # If None or empty, all matching layers are wrapped.
-    target_keywords: list[str] | None = None
+    target_keywords: str | None = None
 
     # Adapter specific hyper-parameters (overrides defaults).
     qlora_cfg: dict[str, Any] | None = None
@@ -73,10 +71,7 @@ class EvalRealTimeOursPipelineConfig:
             )
 
         if not self.job_name:
-            if self.env is None:
-                self.job_name = f"{self.policy.type}"
-            else:
-                self.job_name = f"{self.env.type}_{self.policy.type}"
+            self.job_name = f"{self.policy.type}"
 
         if not self.output_dir:
             now = dt.datetime.now()

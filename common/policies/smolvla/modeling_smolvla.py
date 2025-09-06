@@ -174,7 +174,6 @@ class SmolVLAPolicy(PreTrainedPolicy):
 
         self.language_tokenizer = AutoProcessor.from_pretrained(self.config.vlm_model_name).tokenizer
         self.model = VLAFlowMatching(config)
-
         self.reset()
 
     # HACK(aliberts, danaaubakirova): we overwrite this classmethod here to fix smolVLA-specific issues
@@ -275,6 +274,12 @@ class SmolVLAPolicy(PreTrainedPolicy):
         queue is empty.
         """
         self.eval()
+
+        #check state
+        if len(self._queues[ACTION]) == 0:
+            stt = batch['observation.state']
+            print(f'state : {stt}')
+
         batch = self._prepare_batch(batch)
         # self._queues = populate_queues(self._queues, batch, exclude_keys=["action"])
         self._queues = populate_queues(self._queues, batch)
@@ -289,7 +294,36 @@ class SmolVLAPolicy(PreTrainedPolicy):
             # `self.predict_action_chunk` returns a (batch_size, n_action_steps, action_dim) tensor, but the queue
             # effectively has shape (n_action_steps, batch_size, *), hence the transpose.
             self._queues[ACTION].extend(actions.transpose(0, 1)[: self.config.n_action_steps])
+            #debug
+            import matplotlib.pyplot as plt
+            steps_list = list(self._queues[ACTION])
+            max_steps = 50
+            actions_tbD = torch.stack(steps_list, dim=0)  # (T, B, D)
+            T, B, D = actions_tbD.shape
+            if max_steps is not None:
+                T = min(T, max_steps)
+                actions_tbD = actions_tbD[:T]
 
+            actions_tD = actions_tbD[:, 0, :]  # (T, D)
+            if D < 3:
+                raise ValueError(f"action_dim={D}, need at least 3 dims for xyz")
+
+            x = actions_tD[:, 0].cpu().numpy()
+            y = actions_tD[:, 1].cpu().numpy()
+            z = actions_tD[:, 2].cpu().numpy()
+            t = range(len(x))
+
+            plt.figure()
+            plt.plot(t, x, label="x", linewidth=2)  # 라인
+            plt.plot(t, y, label="y", linewidth=2)
+            plt.plot(t, z, label="z", linewidth=2)
+            plt.xlabel("timestep")
+            plt.ylabel("value")
+            plt.title("XYZ over timesteps")
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.show()
 
         return self._queues[ACTION].popleft()
 

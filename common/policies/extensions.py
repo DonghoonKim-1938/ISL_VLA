@@ -16,6 +16,7 @@ class ExtendedConfig:
 
     adapter_file_path: Optional[list[str | Path]] = None
     aux_loss_cfg: Optional[dict] = None
+    is_train: bool = True
 
     expert_source: Optional[str] = "lora"
 
