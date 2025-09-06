@@ -5,7 +5,6 @@ from typing import Any
 from pathlib import Path
 import draccus
 
-from common import envs, policies  # noqa: F401
 from configs import parser
 from configs.default import DatasetConfig, EvalConfig, WandBConfig
 from configs.policies import PreTrainedConfig
