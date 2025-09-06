@@ -13,7 +13,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any
+from typing import Any, List
+
+import torch
+from zmq.sugar import tracker
 
 from common.utils.utils import format_big_number
 
@@ -169,3 +172,25 @@ def log_wandb_tracker(wandb_logger, tracker, output_dict, step, mode="train"):
             wandb_log_dict.update(output_dict)
         wandb_logger.log_dict(wandb_log_dict, step, mode=mode)
     tracker.reset_averages()
+
+def log_wandb_k_dist(wandb_logger, k_dist, step, mode="k_dist"):
+    if wandb_logger:
+        wandb_log_k_mean = get_k_mean(k_dist)
+        wandb_log_k_freq = get_k_freq(k_dist)
+
+        wandb_logger.log_hist(wandb_log_k_mean, step, mode=mode, title='layer_idx vs k_mean')
+        wandb_logger.log_hist(wandb_log_k_freq, step, mode=mode, title='k vs count over entire layers')
+
+def get_k_mean(dist) -> List[float]:
+    mean_ls = []
+    for k, v in dist.items():
+        mean_ls.append(v.to(torch.float32).mean().item())
+    return mean_ls
+
+def get_k_freq(dist):
+    vals = []
+    for v in dist.values():
+        if isinstance(v, torch.Tensor):
+            vals.append(v.detach().cpu().flatten())
+    all_vals = torch.cat(vals).numpy()
+    return all_vals
