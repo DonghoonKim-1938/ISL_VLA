@@ -1,4 +1,4 @@
-DEVICES=4,5,6,7
+DEVICES=0,1,2,3
 TORCH_DISTRIBUTED_BUCKET_CAP_MB=10
 export PYTHONPATH=$(pwd)
 export TOKENIZERS_PARALLELISM=false
@@ -6,7 +6,7 @@ export TOKENIZERS_PARALLELISM=false
 BASELINE="pi0"
 DATA_ROOT_DIR="piper_multitask"
 
-METHOD="lora_msp_r32_scratch_0.9_relu"
+METHOD="lora_msp_r32_moe_start_0.99_"
 DATASET="multitask"
 
 CUDA_VISIBLE_DEVICES=${DEVICES} \
@@ -27,9 +27,10 @@ CUDA_VISIBLE_DEVICES=${DEVICES} \
     --wandb.disable_artifact=true \
     --output_dir=/result/pi0_${METHOD}_${DATASET} \
     --job_name=pi0_${METHOD}_${DATASET} \
-    --batch_size=6 \
+    --batch_size=12 \
     --num_workers=16 \
     --log_freq=10 \
+    --k_plot_freq=10 \
     --save_freq=5000 \
     --test_freq=100 \
     --steps=30000

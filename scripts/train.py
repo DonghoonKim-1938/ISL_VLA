@@ -24,7 +24,7 @@ from common.policies.lora import LoraConfig
 from common.policies.lora_moe import LoraMoEConfig
 from common.policies.lora_msp import LoraMSPConfig
 from common.utils.train_utils import batch_to_device
-from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker
+from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker, log_wandb_k_dist
 from common.utils.random_utils import set_seed
 from common.utils.train_utils import (
     get_step_checkpoint_dir,
@@ -83,8 +83,6 @@ def update_policy(
         error_if_nonfinite=False,
     )
 
-    policy.plot_topk()
-
     # Optimizer's gradients are already unscaled, so scaler.step does not unscale them,
     # although it still skips optimizer.step() if the gradients contain infs or NaNs.
     with lock if lock is not None else nullcontext():
@@ -119,11 +117,6 @@ def update_policy(
     if has_method(policy, "update"):
         # To possibly update an internal buffer (for instance an Exponential Moving Average like in TDMPC).
         policy.update()
-
-    # Clear cached router statistics to avoid stale tensors accumulating
-    for m in policy.modules():
-        if hasattr(m, "_clear_cache"):
-            m._clear_cache()
 
     train_metrics.loss = loss.item()
     train_metrics.grad_norm = grad_norm.item()
@@ -166,26 +159,26 @@ def train(cfg: TrainPipelineConfig):
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
     cfg.method = ExtendedConfig()
-    cfg.method.core = 'lora_moe'
-    cfg.method.lora_cfg = LoraMoEConfig(
-        r=32,
-        alpha=64,
-        quantize=False,
-        num_experts=4,
-        routing='top1'
-    )
-    # cfg.method.lora_cfg = LoraMSPConfig(
+    cfg.method.core = 'lora_msp'
+    # cfg.method.lora_cfg = LoraMoEConfig(
     #     r=32,
     #     alpha=64,
     #     quantize=False,
     #     num_experts=4,
-    #     target_threshold=0.9,
-    #     use_spec_loss=False,
-    #     use_modular_loss=False,
-    #     use_id_loss=False,
-    #     router_projection=True,
     #     routing='top1'
     # )
+    cfg.method.lora_cfg = LoraMSPConfig(
+        r=32,
+        alpha=64,
+        quantize=False,
+        num_experts=4,
+        target_threshold=0.99,
+        use_spec_loss=False,
+        use_modular_loss=False,
+        use_id_loss=False,
+        router_projection=True,
+        routing='top1'
+    )
     cfg.method.target_keywords = ["all-linear"]
     # cfg.method.adapter_file_path = [
     #     '/result/pi0_lora_r32_openthepot/checkpoints/030000/pretrained_model/adapters.safetensors',
@@ -222,7 +215,7 @@ def train(cfg: TrainPipelineConfig):
             device, local_rank = torch.device("cuda"), 0  # single GPU
 
         if not dist.is_initialized():
-            dist.init_process_group(backend="gloo", timeout=datetime.timedelta(minutes=5))
+            dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=5))
         local_rank = dist.get_rank()
         device = torch.device("cuda", local_rank)
         torch.cuda.set_device(device)  # needed!
@@ -401,6 +394,7 @@ def train(cfg: TrainPipelineConfig):
         is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0
         is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
         is_test_step = cfg.test_freq > 0 and step % cfg.test_freq == 0
+        is_k_plot_step = cfg.k_plot_freq > 0 and step % cfg.k_plot_freq == 0 and cfg.method.core == 'lora_msp'
 
         if is_log_step:
             if is_distributed and (dist.get_rank() != 0):
@@ -408,6 +402,13 @@ def train(cfg: TrainPipelineConfig):
             else:
                 logging.info(train_tracker)
                 log_wandb_tracker(wandb_logger, train_tracker, output_dict, step)
+
+        if is_k_plot_step:
+            if is_distributed and (dist.get_rank() != 0):
+                pass
+            else:
+                k_dist = policy_m.get_k_distribution()
+                log_wandb_k_dist(wandb_logger, k_dist, step)
 
         if cfg.save_checkpoint and is_saving_step:
             if isinstance(policy, FSDP):

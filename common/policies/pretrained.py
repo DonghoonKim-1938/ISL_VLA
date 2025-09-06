@@ -372,11 +372,12 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
 
         return images, img_masks
 
-    def plot_topk(self):
-        for module in self.modules():
-            if module is not self and isinstance(module, LoraMSPLinear):
-                module.plot_k()
-                break
+    def get_k_distribution(self):
+        dist = {}
+        for n, m in self.named_modules():
+            if isinstance(m, LoraMSPLinear) and hasattr(m, "top_k"):
+                dist[n] = m.top_k
+        return dist
 
 
 class PreTrainedFlowMatching(nn.Module):

@@ -173,12 +173,9 @@ class WandBLogger:
         self,
         values: np.ndarray,
         step: int,
-        mode: str = "train",
+        mode: str = "k_dist",
         title: Optional[str] = None,
     ):
-        if mode not in {"train", "eval"}:
-            raise ValueError(mode)
-
         self._wandb.log({f"{mode}/{title}": self._wandb.Histogram(values)}, step=step)
 
     def log_video(self, video_path: str, step: int, mode: str = "train"):

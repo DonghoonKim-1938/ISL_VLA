@@ -56,6 +56,7 @@ class TrainPipelineConfig(HubMixin):
     steps: int = 100_000
     test_freq: int = 1
     log_freq: int = 200
+    k_plot_freq: int = 1000
     save_checkpoint: bool = True
     checkpoint_path: Path | None = None
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.

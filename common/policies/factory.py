@@ -178,7 +178,6 @@ def wrap_policy(
 
     elif method =="lora_msp":
         lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraMSPConfig()
-        lora_cfg_obj.quantize = True
         train_router_loss = True
 
         if is_master:

@@ -150,12 +150,12 @@ class LoraMSPLinear(LoraLinear):
         masked_router_logits = router_logits.masked_fill(~mask, 0.0)
         gates = torch.softmax(masked_router_logits, dim=-1)
 
-        self._topk = top_counts[0]
+        self._topk = top_counts
 
         A_t = self.A.transpose(-1, 0)
         B_t = self.B.transpose(-1, 0)
 
-        proj_r = torch.einsum('bsi,ir,bsr->bsr', x, A_t, router_logits)  # (B, S, r)
+        proj_r = torch.einsum('bsi,ir,bsr->bsr', x, A_t, masked_router_logits)  # (B, S, r)
         lora_out = torch.einsum('bsr,ro->bso', proj_r, B_t)  # (B, S, out)
 
         scaled_lora_out = lora_out * self.cfg.scale
@@ -214,9 +214,9 @@ class LoraMSPLinear(LoraLinear):
         return loss
 
     def _compute_spec_loss(self) -> bool:
-        return not self.cfg.use_spec_loss or self._last_router_logits is None
+        return (not self.cfg.use_spec_loss) or (self._last_router_logits is None)
 
-    def compute_spec_loss(self, ground_rank: int, target_rank: int) -> torch.Tensor:
+    def compute_spec_loss(self) -> torch.Tensor:
         if self._compute_spec_loss():
             return torch.tensor(0.0, dtype=self.dtype, device=self.A.device)
 
@@ -346,11 +346,9 @@ class LoraMSPLinear(LoraLinear):
 
         return missing, found
 
-    def plot_k(self):
-        unique, counts = torch.unique(self._topk.to('cpu'), return_counts=True)
-        plt.bar(unique, counts)
-        plt.tight_layout()
-        plt.show()
+    @property
+    def top_k(self) -> torch.Tensor:
+        return self._topk.to('cpu')
 
     def initialize_router_proj(self):
         base = torch.eye(self.cfg.num_experts, dtype=self.dtype)
