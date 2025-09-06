@@ -162,7 +162,7 @@ def inject_adapters(
             for adapter_name in adapter_names:
                 adapter_param_names.append(f"{w}.{adapter_name}")
         existing = getattr(model, "_adapter_param_names", set())
-        model._adapter_param_names = set(existing).union(adapter_names)
+        model._adapter_param_names = set(existing).union(adapter_param_names)
 
     if not wrapped:
         raise RuntimeError("No linear layers matched for LoRA injection.")
