@@ -357,9 +357,8 @@ def train(cfg: TrainPipelineConfig):
         policy_m.gradient_checkpointing_enable()
 
     for _ in range(step, cfg.steps):
-        if isinstance(policy, FSDP):
-            gc.collect()
-            torch.cuda.empty_cache()
+        gc.collect()
+        torch.cuda.empty_cache()
 
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
