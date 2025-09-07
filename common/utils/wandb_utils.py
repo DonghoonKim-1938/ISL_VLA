@@ -18,7 +18,7 @@ import os
 import re
 from glob import glob
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
@@ -177,6 +177,22 @@ class WandBLogger:
         title: Optional[str] = None,
     ):
         self._wandb.log({f"{mode}/{title}": self._wandb.Histogram(values)}, step=step)
+
+    def log_bar(
+        self,
+        values: np.ndarray,
+        column_name: Tuple[str, str],
+        step: int,
+        mode: str = "k_dist",
+        title: Optional[str] = None,
+    ):
+        x_axis, y_axis = column_name
+        table = self._wandb.Table(columns=[x_axis, y_axis])
+        for idx, val in enumerate(values):
+            table.add_data(int(idx), float(val))
+        line_plot = self._wandb.plot.bar(table, x_axis, y_axis, title=title)
+        self._wandb.log({f"{mode}/{title}": line_plot}, step=step)
+
 
     def log_video(self, video_path: str, step: int, mode: str = "train"):
         if mode not in {"train", "eval"}:

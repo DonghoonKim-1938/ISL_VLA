@@ -4,9 +4,9 @@ export PYTHONPATH=$(pwd)
 export TOKENIZERS_PARALLELISM=false
 
 BASELINE="pi0"
-DATA_ROOT_DIR="piper_multitask"
+DATA_ROOT_DIR="piper_multitask_push2"
 
-METHOD="lora_msp_r32_moe_start_0.9"
+METHOD="lora_msp_r32_moe_top1_start_0.9"
 DATASET="multitask"
 
 CUDA_VISIBLE_DEVICES=${DEVICES} \

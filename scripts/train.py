@@ -24,7 +24,7 @@ from common.policies.lora import LoraConfig
 from common.policies.lora_moe import LoraMoEConfig
 from common.policies.lora_msp import LoraMSPConfig
 from common.utils.train_utils import batch_to_device
-from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker, log_wandb_k_dist
+from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker, log_wandb_k_dist, log_csv_k_dist
 from common.utils.random_utils import set_seed
 from common.utils.train_utils import (
     get_step_checkpoint_dir,
@@ -177,7 +177,7 @@ def train(cfg: TrainPipelineConfig):
         use_modular_loss=False,
         use_id_loss=False,
         router_projection=True,
-        routing='top1'
+        routing='weighted'
     )
     cfg.method.target_keywords = ["all-linear"]
     # cfg.method.adapter_file_path = [
@@ -187,13 +187,13 @@ def train(cfg: TrainPipelineConfig):
     #     '/result/pi0_lora_r32_pushthebutton/030000/pretrained_model/adapters.safetensors'
     # ]
     cfg.method.adapter_file_path = [
-        '/result/pi0_lora_moe_multitask_r32/checkpoints/030000/pretrained_model/adapters.safetensors'
+        '/result/pi0_lora_moe_r32_weighted_multitask/30000/pretrained_model/adapters.safetensors'
     ]
     cfg.gradient_checkpointing = True
     cfg.method.aux_loss_cfg = {
         "lb_coeff": 1e-3,
         "z_coeff": 0.01,
-        "spec_coeff": 1e-3,
+        "spec_coeff": 0.01,
         "mod_coeff": 1e-3,
         "id_coeff": 1e-3,
     }
@@ -408,7 +408,9 @@ def train(cfg: TrainPipelineConfig):
                 pass
             else:
                 k_dist = policy_m.get_k_distribution()
+                log_csv_path = cfg.output_dir / "k_dist_log"
                 log_wandb_k_dist(wandb_logger, k_dist, step)
+                log_csv_k_dist(log_csv_path, k_dist, step) if is_log_step else None
 
         if cfg.save_checkpoint and is_saving_step:
             if isinstance(policy, FSDP):
