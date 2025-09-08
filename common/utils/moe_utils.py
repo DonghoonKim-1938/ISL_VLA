@@ -15,11 +15,11 @@ def compute_router_loss(
 
     for module in model.modules():
         if isinstance(module, LoraMoELinear) or isinstance(module, LoraMSPLinear):
-            lb_loss = module.compute_balance_loss() if hasattr(module, "compute_balance_loss") else torch.Tensor([0.0], device=model.device, dtype=module.dtype)
-            z_loss = module.compute_z_loss() if hasattr(module, "compute_z_loss") else torch.Tensor([0.0], device=model.device, dtype=module.dtype)
-            spec_loss = module.compute_spec_loss() if hasattr(module, "compute_spec_loss") else torch.Tensor(0.0, device=model.device, dtype=module.dtype)
-            mod_loss = module.compute_mod_loss() if hasattr(module, "compute_mod_loss") else torch.Tensor(0.0, device=model.device, dtype=module.dtype)
-            id_loss = module.compute_id_loss() if hasattr(module, "compute_id_loss") else torch.Tensor(0.0, device=model.device, dtype=module.dtype)
+            lb_loss = module.compute_balance_loss() if hasattr(module, "compute_balance_loss") else torch.Tensor([0.0]).to(dtype= module.dtype, device= model.device)
+            z_loss = module.compute_z_loss() if hasattr(module, "compute_z_loss") else torch.Tensor([0.0]).to(dtype= module.dtype, device= model.device)
+            spec_loss = module.compute_spec_loss() if hasattr(module, "compute_spec_loss") else torch.Tensor([0.0]).to(dtype= module.dtype, device= model.device)
+            mod_loss = module.compute_mod_loss() if hasattr(module, "compute_mod_loss") else torch.Tensor([0.0]).to(dtype= module.dtype, device= model.device)
+            id_loss = module.compute_id_loss() if hasattr(module, "compute_id_loss") else torch.Tensor([0.0]).to(dtype= module.dtype, device= model.device)
 
             lb_losses.append(lb_loss) if lb_loss is not None else None
             z_losses.append(z_loss) if z_loss is not None else None
