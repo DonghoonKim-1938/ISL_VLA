@@ -596,7 +596,9 @@ class VLAFlowMatching(PreTrainedFlowMatching):
         num_lang_embs = lang_emb.shape[1]
         att_masks += [0] * num_lang_embs
 
+        state = state.unsqueeze(1)
         state_emb = self.state_proj(state)
+        state_emb = state_emb.squeeze(1)
         state_emb = state_emb[:, None, :] if state_emb.ndim == 2 else state_emb
         embs.append(state_emb)
         bsize = state_emb.shape[0]
