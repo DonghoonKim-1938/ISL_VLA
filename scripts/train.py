@@ -24,7 +24,7 @@ from common.policies.lora import LoraConfig
 from common.policies.lora_moe import LoraMoEConfig
 from common.policies.lora_msp import LoraMSPConfig
 from common.utils.train_utils import batch_to_device
-from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker, log_wandb_k_dist
+from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker, log_wandb_k_dist, log_csv_k_dist
 from common.utils.random_utils import set_seed
 from common.utils.train_utils import (
     get_step_checkpoint_dir,
@@ -159,26 +159,26 @@ def train(cfg: TrainPipelineConfig):
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
     cfg.method = ExtendedConfig()
-    cfg.method.core = 'lora_msp'
-    # cfg.method.lora_cfg = LoraMoEConfig(
-    #     r=32,
-    #     alpha=64,
-    #     quantize=False,
-    #     num_experts=4,
-    #     routing='top1'
-    # )
-    cfg.method.lora_cfg = LoraMSPConfig(
+    cfg.method.core = 'lora_moe'
+    cfg.method.lora_cfg = LoraMoEConfig(
         r=32,
         alpha=64,
         quantize=False,
         num_experts=4,
-        target_threshold=0.9,
-        use_spec_loss=True,
-        use_modular_loss=False,
-        use_id_loss=False,
-        router_projection=True,
         routing='top1'
     )
+    # cfg.method.lora_cfg = LoraMSPConfig(
+    #     r=32,
+    #     alpha=64,
+    #     quantize=False,
+    #     num_experts=4,
+    #     target_threshold=0.9,
+    #     use_spec_loss=True,
+    #     use_modular_loss=False,
+    #     use_id_loss=False,
+    #     router_projection=True,
+    #     routing='top1'
+    # )
     cfg.method.target_keywords = ["all-linear"]
     # cfg.method.adapter_file_path = [
     #     '/result/pi0_lora_r32_openthepot/checkpoints/030000/pretrained_model/adapters.safetensors',
@@ -186,18 +186,18 @@ def train(cfg: TrainPipelineConfig):
     #     '/result/pi0_lora_r32_pourtheblock/030000/pretrained_model/adapters.safetensors',
     #     '/result/pi0_lora_r32_pushthebutton/030000/pretrained_model/adapters.safetensors'
     # ]
-    cfg.method.adapter_file_path = [
-        '/result/pi0_lora_moe_multitask_r32/checkpoints/030000/pretrained_model/adapters.safetensors'
-    ]
+    # cfg.method.adapter_file_path = [
+    #     '/result/pi0_lora_moe_r32_top1_multitask/30000/pretrained_model/adapters.safetensors'
+    # ]
     cfg.gradient_checkpointing = True
     cfg.method.aux_loss_cfg = {
         "lb_coeff": 1e-3,
         "z_coeff": 0.01,
-        "spec_coeff": 1e-3,
+        "spec_coeff": 0.01,
         "mod_coeff": 1e-3,
         "id_coeff": 1e-3,
     }
-    cfg.method.expert_source = 'lora_moe'
+    # cfg.method.expert_source = 'lora_moe'
 
     # ---------------------------------------------------------
     # distributed mode flags
@@ -357,9 +357,8 @@ def train(cfg: TrainPipelineConfig):
         policy_m.gradient_checkpointing_enable()
 
     for _ in range(step, cfg.steps):
-        if isinstance(policy, FSDP):
-            gc.collect()
-            torch.cuda.empty_cache()
+        gc.collect()
+        torch.cuda.empty_cache()
 
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
@@ -408,7 +407,9 @@ def train(cfg: TrainPipelineConfig):
                 pass
             else:
                 k_dist = policy_m.get_k_distribution()
+                log_csv_path = cfg.output_dir / "k_dist_log"
                 log_wandb_k_dist(wandb_logger, k_dist, step)
+                log_csv_k_dist(log_csv_path, k_dist, step) if is_log_step else None
 
         if cfg.save_checkpoint and is_saving_step:
             if isinstance(policy, FSDP):

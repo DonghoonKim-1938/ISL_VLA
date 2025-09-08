@@ -1,5 +1,7 @@
 #!/usr/bin/env python
-
+import os
+import pickle
+from pathlib import Path
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,6 +17,8 @@
 # limitations under the License.
 from typing import Any, List
 
+import numpy as np
+import pandas as pd
 import torch
 from zmq.sugar import tracker
 
@@ -175,17 +179,17 @@ def log_wandb_tracker(wandb_logger, tracker, output_dict, step, mode="train"):
 
 def log_wandb_k_dist(wandb_logger, k_dist, step, mode="k_dist"):
     if wandb_logger:
-        wandb_log_k_mean = get_k_mean(k_dist)
+        wandb_log_k_mean = get_k_mean(k_dist).values()
         wandb_log_k_freq = get_k_freq(k_dist)
 
-        wandb_logger.log_hist(wandb_log_k_mean, step, mode=mode, title='layer_idx vs k_mean')
+        wandb_logger.log_bar(wandb_log_k_mean, column_name=("layer_idx", "k_mean"), step=step, mode=mode, title='layer_idx vs k_mean')
         wandb_logger.log_hist(wandb_log_k_freq, step, mode=mode, title='k vs count over entire layers')
 
-def get_k_mean(dist) -> List[float]:
-    mean_ls = []
+def get_k_mean(dist) -> dict[str, float]:
+    mean_dict = {}
     for k, v in dist.items():
-        mean_ls.append(v.to(torch.float32).mean().item())
-    return mean_ls
+        mean_dict[k] = (v.to(torch.float32).mean().item())
+    return mean_dict
 
 def get_k_freq(dist):
     vals = []
@@ -194,3 +198,29 @@ def get_k_freq(dist):
             vals.append(v.detach().cpu().flatten())
     all_vals = torch.cat(vals).numpy()
     return all_vals
+
+def log_csv_k_dist(
+        output_path: Path | str,
+        k_dist: dict[str, torch.Tensor],
+        step: int
+    ) -> None:
+    output_path_mean = output_path / "k_mean"
+    output_path_freq = output_path / "k_freq"
+    output_path_raw = output_path / "k_raw"
+
+    os.makedirs(output_path, exist_ok=True)
+    os.makedirs(output_path_mean, exist_ok=True)
+    os.makedirs(output_path_freq, exist_ok=True)
+    os.makedirs(output_path_raw, exist_ok=True)
+
+    csv_log_k_mean = get_k_mean(k_dist)
+    df = pd.DataFrame(list(csv_log_k_mean.items()), columns=["module", "k_mean"])
+    df.to_csv(f"{output_path_mean}/step_{step}.csv", index=False)
+
+    csv_log_k_freq = get_k_freq(k_dist)
+    unique, count = np.unique(csv_log_k_freq, return_counts=True)
+    df = pd.DataFrame({"k_value": unique, "count": count})
+    df.to_csv(f"{output_path_freq}/step_{step}.csv", index=False)
+
+    with open(f"{output_path_raw}/step_{step}.pickle", "wb") as f:
+        pickle.dump(k_dist, f)

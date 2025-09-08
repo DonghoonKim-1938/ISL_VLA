@@ -45,6 +45,7 @@ class LoraMoELinear(LoraLinear):
 
         self.cfg = cfg
         self._load_base(base, cfg.quantize)
+        self.dtype = base.weight.dtype
         for p in self.base.parameters():
             p.requires_grad_(False)
 
