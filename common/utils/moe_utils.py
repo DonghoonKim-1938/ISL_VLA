@@ -8,8 +8,6 @@ from common.policies.lora_msp import LoraMSPLinear
 
 def compute_router_loss(
     model: nn.Module,
-    ground_rank: int = 64,
-    target_rank: int = 64,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     lb_losses, z_losses, spec_losses, mod_losses, id_losses = [], [], [], [], []
 
