@@ -72,7 +72,7 @@ def update_policy(
     with torch.autocast(device_type=device.type) if use_amp else nullcontext():
         loss, output_dict = policy.forward(batch, method = method)
     grad_scaler.scale(loss).backward()
-    policy.clear_cache()
+    # policy.clear_cache()
 
     # Unscale the gradient of the optimizer's assigned params in-place **prior to gradient clipping**.
     grad_scaler.unscale_(optimizer)
@@ -159,26 +159,26 @@ def train(cfg: TrainPipelineConfig):
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
     cfg.method = ExtendedConfig()
-    cfg.method.core = 'lora_moe'
-    cfg.method.lora_cfg = LoraMoEConfig(
-        r=32,
-        alpha=64,
-        quantize=False,
-        num_experts=4,
-        routing='top1'
-    )
-    # cfg.method.lora_cfg = LoraMSPConfig(
+    cfg.method.core = 'lora_msp'
+    # cfg.method.lora_cfg = LoraMoEConfig(
     #     r=32,
     #     alpha=64,
     #     quantize=False,
     #     num_experts=4,
-    #     target_threshold=0.9,
-    #     use_spec_loss=True,
-    #     use_modular_loss=False,
-    #     use_id_loss=False,
-    #     router_projection=True,
     #     routing='top1'
     # )
+    cfg.method.lora_cfg = LoraMSPConfig(
+        r=32,
+        alpha=64,
+        quantize=False,
+        num_experts=4,
+        target_threshold=0.8,
+        use_spec_loss=True,
+        use_modular_loss=False,
+        use_id_loss=False,
+        router_projection=True,
+        routing='weighted'
+    )
     cfg.method.target_keywords = ["all-linear"]
     # cfg.method.adapter_file_path = [
     #     '/result/pi0_lora_r32_openthepot/checkpoints/030000/pretrained_model/adapters.safetensors',
@@ -357,9 +357,6 @@ def train(cfg: TrainPipelineConfig):
         policy_m.gradient_checkpointing_enable()
 
     for _ in range(step, cfg.steps):
-        gc.collect()
-        torch.cuda.empty_cache()
-
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
 
