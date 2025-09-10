@@ -16,7 +16,12 @@ from common.policies.lora import LoraConfig, LoraLinear
 class LoraMSPConfig(LoraConfig):
     num_experts: int = 4
     layer_type: str = "lora_msp"
+
     target_threshold: float = 0.9
+    target_threshold_init: float = 0.9
+    target_threshold_end: Optional[float] = None
+    threshold_scheduling: Optional[str] = None
+    max_threshold_step: float = 0.2
 
     use_spec_loss: bool = False
     use_modular_loss: bool = False
@@ -35,6 +40,7 @@ class LoraMSPLinear(LoraLinear):
             raise TypeError("MoELoRALinear expects an nn.Linear to wrap")
 
         self.cfg = cfg
+        self.target_threshold = cfg.target_threshold
         self.r = cfg.r
         self._load_base(base, cfg.quantize)
         self.dtype = base.weight.dtype
@@ -87,7 +93,7 @@ class LoraMSPLinear(LoraLinear):
         self.update_router_weight_ema_flag = True
 
     def _threshold_mask(self, logits: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        threshold = self.cfg.target_threshold
+        threshold = self.target_threshold
         sorted_vals, sorted_idx = torch.sort(logits, dim=-1, descending=True)
 
         total_sq_sum = (sorted_vals ** 2).sum(dim=-1, keepdim=True)  # (batch, seq, 1)
@@ -412,3 +418,17 @@ class LoraMSPLinear(LoraLinear):
             gates = mask / (mask.sum(dim=-1, keepdim=True) + 1e-9)
 
         return gates
+
+    def set_threshold(self, step: float):
+        if self.cfg.threshold_scheduling is None:
+            self.target_threshold = self.cfg.target_threshold_init
+
+        elif self.cfg.threshold_scheduling == "linear":
+            if step > self.cfg.max_threshold_step:
+                self.target_threshold = self.cfg.target_threshold_end
+            else:
+                ratio = min(step / self.cfg.max_threshold_step, 0.1)
+                self.target_threshold = (1.0 - ratio) * self.cfg.target_threshold_init + ratio * self.cfg.target_threshold_end
+
+        else:
+            raise NotImplementedError(f"threshold_scheduling {self.threshold_scheduling} not implemented")

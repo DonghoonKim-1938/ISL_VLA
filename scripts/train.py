@@ -22,7 +22,7 @@ from common.datasets.make_dataloader import make_dataloader
 from common.policies.extensions import ExtendedConfig
 from common.policies.lora import LoraConfig
 from common.policies.lora_moe import LoraMoEConfig
-from common.policies.lora_msp import LoraMSPConfig
+from common.policies.lora_msp import LoraMSPConfig, LoraMSPLinear
 from common.utils.train_utils import batch_to_device
 from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker, log_wandb_k_dist, log_csv_k_dist
 from common.utils.random_utils import set_seed
@@ -172,7 +172,9 @@ def train(cfg: TrainPipelineConfig):
         alpha=64,
         quantize=False,
         num_experts=4,
-        target_threshold=0.8,
+        target_threshold_init=0.9,
+        target_threshold_end=0.5,
+        threshold_scheduling='linear',
         use_spec_loss=True,
         use_modular_loss=False,
         use_id_loss=False,
@@ -187,7 +189,7 @@ def train(cfg: TrainPipelineConfig):
     #     '/result/pi0_lora_r32_pushthebutton/030000/pretrained_model/adapters.safetensors'
     # ]
     # cfg.method.adapter_file_path = [
-    #     '/result/pi0_lora_moe_r32_top1_multitask/30000/pretrained_model/adapters.safetensors'
+    #     '/result/SmolVLA_lora_moe_r32_weighted_multitask/030000/pretrained_model/adapters.safetensors'
     # ]
     cfg.gradient_checkpointing = True
     cfg.method.aux_loss_cfg = {
@@ -197,7 +199,7 @@ def train(cfg: TrainPipelineConfig):
         "mod_coeff": 1e-3,
         "id_coeff": 1e-3,
     }
-    # cfg.method.expert_source = 'lora_moe'
+    cfg.method.expert_source = 'lora_moe'
 
     # ---------------------------------------------------------
     # distributed mode flags
@@ -367,6 +369,11 @@ def train(cfg: TrainPipelineConfig):
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(device, non_blocking=True)
+
+        if (cfg.method.core == 'lora_msp') and (cfg.method.lora_cfg.threshold_scheduling is not None):
+            for m in policy.modules():
+                if isinstance(m, LoraMSPLinear):
+                    m.set_threshold(step/cfg.steps)
 
         train_tracker, output_dict = update_policy(
             train_tracker,
