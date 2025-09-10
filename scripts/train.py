@@ -22,7 +22,7 @@ from common.datasets.make_dataloader import make_dataloader
 from common.policies.extensions import ExtendedConfig
 from common.policies.lora import LoraConfig
 from common.policies.lora_moe import LoraMoEConfig
-from common.policies.lora_msp import LoraMSPConfig
+from common.policies.lora_msp import LoraMSPConfig, LoraMSPLinear
 from common.utils.train_utils import batch_to_device
 from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker, log_wandb_k_dist, log_csv_k_dist
 from common.utils.random_utils import set_seed
@@ -72,7 +72,7 @@ def update_policy(
     with torch.autocast(device_type=device.type) if use_amp else nullcontext():
         loss, output_dict = policy.forward(batch, method = method)
     grad_scaler.scale(loss).backward()
-    policy.clear_cache()
+    # policy.clear_cache()
 
     # Unscale the gradient of the optimizer's assigned params in-place **prior to gradient clipping**.
     grad_scaler.unscale_(optimizer)
@@ -159,26 +159,28 @@ def train(cfg: TrainPipelineConfig):
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
     cfg.method = ExtendedConfig()
-    cfg.method.core = 'lora_moe'
-    cfg.method.lora_cfg = LoraMoEConfig(
-        r=32,
-        alpha=64,
-        quantize=False,
-        num_experts=4,
-        routing='top1'
-    )
-    # cfg.method.lora_cfg = LoraMSPConfig(
+    cfg.method.core = 'lora_msp'
+    # cfg.method.lora_cfg = LoraMoEConfig(
     #     r=32,
     #     alpha=64,
     #     quantize=False,
     #     num_experts=4,
-    #     target_threshold=0.9,
-    #     use_spec_loss=True,
-    #     use_modular_loss=False,
-    #     use_id_loss=False,
-    #     router_projection=True,
     #     routing='top1'
     # )
+    cfg.method.lora_cfg = LoraMSPConfig(
+        r=32,
+        alpha=64,
+        quantize=False,
+        num_experts=4,
+        target_threshold_init=0.9,
+        target_threshold_end=0.5,
+        threshold_scheduling='linear',
+        use_spec_loss=True,
+        use_modular_loss=False,
+        use_id_loss=False,
+        router_projection=True,
+        routing='weighted'
+    )
     cfg.method.target_keywords = ["all-linear"]
     # cfg.method.adapter_file_path = [
     #     '/result/pi0_lora_r32_openthepot/checkpoints/030000/pretrained_model/adapters.safetensors',
@@ -187,7 +189,7 @@ def train(cfg: TrainPipelineConfig):
     #     '/result/pi0_lora_r32_pushthebutton/030000/pretrained_model/adapters.safetensors'
     # ]
     # cfg.method.adapter_file_path = [
-    #     '/result/pi0_lora_moe_r32_top1_multitask/30000/pretrained_model/adapters.safetensors'
+    #     '/result/SmolVLA_lora_moe_r32_weighted_multitask/030000/pretrained_model/adapters.safetensors'
     # ]
     cfg.gradient_checkpointing = True
     cfg.method.aux_loss_cfg = {
@@ -197,7 +199,7 @@ def train(cfg: TrainPipelineConfig):
         "mod_coeff": 1e-3,
         "id_coeff": 1e-3,
     }
-    # cfg.method.expert_source = 'lora_moe'
+    cfg.method.expert_source = 'lora_moe'
 
     # ---------------------------------------------------------
     # distributed mode flags
@@ -357,9 +359,6 @@ def train(cfg: TrainPipelineConfig):
         policy_m.gradient_checkpointing_enable()
 
     for _ in range(step, cfg.steps):
-        gc.collect()
-        torch.cuda.empty_cache()
-
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
 
@@ -370,6 +369,11 @@ def train(cfg: TrainPipelineConfig):
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(device, non_blocking=True)
+
+        if (cfg.method.core == 'lora_msp') and (cfg.method.lora_cfg.threshold_scheduling is not None):
+            for m in policy.modules():
+                if isinstance(m, LoraMSPLinear):
+                    m.set_threshold(step/cfg.steps)
 
         train_tracker, output_dict = update_policy(
             train_tracker,
