@@ -3,8 +3,9 @@ import time
 import os
 import datetime
 from contextlib import nullcontext
+from pathlib import Path
 from pprint import pformat
-from typing import Any, List
+from typing import Any, List, Optional
 import gc
 
 # LoRA / Prefix / LoRA-MoE injection utilities
@@ -19,6 +20,7 @@ from torch.optim import Optimizer
 import torch.distributed as dist
 
 from common.datasets.make_dataloader import make_dataloader
+from common.policies.lora_ada import LoraADAConfig, RankAllocator
 from common.policies.extensions import ExtendedConfig
 from common.policies.lora import LoraConfig
 from common.policies.lora_moe import LoraMoEConfig
@@ -64,7 +66,7 @@ def update_policy(
     lr_scheduler=None,
     use_amp: bool = False,
     lock=None,
-    method: ExtendedConfig | None = None,
+    method: Optional[ExtendedConfig] = None,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     device = get_device_from_parameters(policy)
@@ -159,7 +161,7 @@ def train(cfg: TrainPipelineConfig):
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
     cfg.method = ExtendedConfig()
-    cfg.method.core = 'lora_msp'
+    cfg.method.core = 'lora_ada'
     # cfg.method.lora_cfg = LoraMoEConfig(
     #     r=32,
     #     alpha=64,
@@ -172,14 +174,19 @@ def train(cfg: TrainPipelineConfig):
         alpha=64,
         quantize=False,
         num_experts=4,
-        target_threshold_init=0.9,
+        target_threshold_init=0.8,
         target_threshold_end=0.5,
-        threshold_scheduling='linear',
+        threshold_scheduling=None,
         use_spec_loss=True,
         use_modular_loss=False,
         use_id_loss=False,
         router_projection=True,
         routing='weighted'
+    )
+    cfg.method.lora_cfg = LoraADAConfig(
+        r=128,
+        alpha=256,
+        quantize=False,
     )
     cfg.method.target_keywords = ["all-linear"]
     # cfg.method.adapter_file_path = [
@@ -200,6 +207,11 @@ def train(cfg: TrainPipelineConfig):
         "id_coeff": 1e-3,
     }
     cfg.method.expert_source = 'lora_moe'
+    # cfg.method.adapter_file_path = [
+    #     '/result/SmolVLA_lora_msp_r32_scratch_weighted_0.9_pickplace/checkpoints/025000/pretrained_model/adapters.safetensors'
+    # ]
+    # cfg.method.is_train = False
+    # cfg.checkpoint_path = Path('/result/SmolVLA_lora_msp_r32_scratch_weighted_0.9_pickplace/checkpoints/025000')
 
     # ---------------------------------------------------------
     # distributed mode flags
@@ -278,6 +290,16 @@ def train(cfg: TrainPipelineConfig):
     grad_scaler = GradScaler(device.type, enabled=cfg.policy.use_amp)
 
     step = 0  # number of policy updates (forward + backward + optim)
+
+    if cfg.method.core == "lora_ada":
+        rank_allocator = RankAllocator(
+            model = policy_m,
+            r = cfg.method.lora_cfg.r,
+            target_rank = cfg.method.lora_cfg.r // 4,
+        )
+        rank_allocator.set_total_step(cfg.steps)
+    else:
+        rank_allocator = None
 
     if cfg.resume:
         logging.info(f"Resuming training from checkpoint: {cfg.checkpoint_path}")
@@ -373,7 +395,7 @@ def train(cfg: TrainPipelineConfig):
         if (cfg.method.core == 'lora_msp') and (cfg.method.lora_cfg.threshold_scheduling is not None):
             for m in policy.modules():
                 if isinstance(m, LoraMSPLinear):
-                    m.set_threshold(step/cfg.steps)
+                    m.set_threshold(step)
 
         train_tracker, output_dict = update_policy(
             train_tracker,
@@ -388,6 +410,9 @@ def train(cfg: TrainPipelineConfig):
         )
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
+
+        if rank_allocator is not None:
+            curr_rank, mask_threshold = rank_allocator.update_and_mask(policy, step)
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.

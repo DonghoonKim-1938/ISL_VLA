@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 from pathlib import Path
 
+from common.policies.lora_ada import LoraADAConfig
 from common.policies.lora import LoraConfig
 from common.policies.lora_moe import LoraMoEConfig
 from common.policies.lora_msp import LoraMSPConfig
@@ -29,12 +30,14 @@ class ExtendedConfig:
             return LoraMoEConfig()
         elif self.core in ["lora_msp", "qlora_msp"]:
             return LoraMSPConfig()
+        elif self.core in ["lora_ada, qlora_ada"]:
+            return LoraADAConfig()
         else:
             raise ValueError(f"Unknown core: {self.core}")
 
     @property
     def use_moe(self) -> bool:
-        if self.core in ["vanilla", "lora", "qlora"]:
+        if self.core in ["vanilla", "lora", "qlora", "lora_ada", "qlora_ada"]:
             return False
         elif self.core in ["lora_moe", "qlora_moe", 'lora_msp', 'qlora_msp']:
             return True
@@ -43,4 +46,4 @@ class ExtendedConfig:
 
     @property
     def use_adapters(self) -> bool:
-        return self.core in ["lora", "qlora", "lora_moe", "qlora_moe", "lora_msp", "qlora_msp"]
+        return self.core in ["lora", "qlora", "lora_moe", "qlora_moe", "lora_msp", "qlora_msp", "lora_ada", "qlora_ada"]

@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import safetensors.torch as sft
 
+from common.policies.lora_ada import LoraADALinear
 from common.policies.lora import LoraConfig, LoraLinear
 from common.policies.lora_moe import LoraMoELinear
 
@@ -133,6 +134,8 @@ def inject_adapters(
             return LoraMoELinear
         elif layer_type == "lora_msp":
             return LoraMSPLinear
+        elif layer_type == "lora_ada":
+            return LoraADALinear
         else:
             raise ValueError(f"Unknown adapter type: {layer_type}")
 
@@ -244,5 +247,7 @@ def get_adapter_names(layer_cls: Type[LoraLinear]) -> List[str]:
         return ["A", "B", "router.weight","router_proj"]
     elif layer_cls is LoraMoELinear:
         return ["A", "B", "router.weight"]
+    elif layer_cls is LoraADALinear:
+        return ["A", "B", "E", "rank_num"]
     else:
         raise TypeError(f"Unknown layer class {layer_cls}")
