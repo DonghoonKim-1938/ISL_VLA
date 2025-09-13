@@ -24,6 +24,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, MixedPrecis
 
 from common.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from common.datasets.utils import dataset_to_policy_features
+from common.policies.lora_ada import LoraADAConfig
 from common.policies.pi0.configuration_pi0 import PI0Config
 from common.policies.pretrained import PreTrainedPolicy
 from common.policies.smolvla.configuration_smolvla import SmolVLAConfig
@@ -184,6 +185,19 @@ def _get_lora_cfg_obj(
         if is_master:
             logging.info("Injected LoRA-MSP modules")
 
+    elif method == "lora_ada":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraADAConfig()
+
+        if is_master:
+            logging.info("Injected LoRA-ADA modules")
+
+    elif method == "qlora_ada":
+        lora_cfg_obj = cfg.lora_cfg if hasattr(cfg, "lora_cfg") else LoraADAConfig()
+        lora_cfg_obj.quantize = True
+
+        if is_master:
+            logging.info("Injected QLoRA-ADA modules")
+
     elif method == "vanilla":
         if is_master:
             logging.info("Using Vanilla model")
@@ -192,6 +206,7 @@ def _get_lora_cfg_obj(
         raise NotImplementedError(f"{method} not implemented")
 
     return policy, train_router_loss, lora_cfg_obj
+
 
 def wrap_policy(
     policy: PreTrainedPolicy,

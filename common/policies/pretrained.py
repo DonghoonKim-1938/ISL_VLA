@@ -178,7 +178,6 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
             noise=None,
             time=None,
             method: Optional[ExtendedConfig] = None,
-            ranks: Optional[List[int]] = None,
     ) -> tuple[Tensor, dict[str, Tensor]]:
         if self.config.adapt_to_pi_aloha:
             batch[OBS_ROBOT] = self._pi_aloha_decode_state(batch[OBS_ROBOT])
@@ -213,7 +212,9 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
 
         if self._compute_router_loss:
             assert self.train_aux_loss
-            aux_loss, loss_dict = self._router_forward(method.aux_loss_cfg, loss_dict, ranks=ranks)
+            aux_loss, loss_dict = self._router_forward(method.aux_loss_cfg, loss_dict)
+        elif method.core == "lora_ada":
+            aux_loss = self._compute_orth_regu(regu_weight=0.01)
         else:
             aux_loss = torch.tensor(0.0, device=loss.device, dtype=loss.dtype)
 
@@ -225,18 +226,14 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
             self,
             aux_loss_cfg: dict,
             loss_dict: dict,
-            ranks=None
     ):
-        if ranks is None:
-            ranks = [64, 32]
-
         lb_coeff = aux_loss_cfg.get("lb_coeff", 0.01)
         z_coeff = aux_loss_cfg.get("z_coeff", 1e-3)
         spec_coeff = aux_loss_cfg.get("spec_coeff", 0.0)
         mod_coeff = aux_loss_cfg.get("mod_coeff", 0.0)
         id_coeff = aux_loss_cfg.get("id_coeff", 0.0)
 
-        lb_loss, z_loss, spec_loss, mod_loss, id_loss = compute_router_loss(self, ground_rank=ranks[0], target_rank=ranks[1])
+        lb_loss, z_loss, spec_loss, mod_loss, id_loss = compute_router_loss(self)
 
         aux_loss = lb_coeff * lb_loss + z_coeff * z_loss + spec_coeff * spec_loss + mod_coeff * mod_loss + id_coeff * id_loss
 
@@ -248,6 +245,18 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
         loss_dict["moe_aux_loss"] = aux_loss.item()
 
         return aux_loss, loss_dict
+
+    def _compute_orth_regu(self, regu_weight=0.1):
+        # The function to compute orthongonal regularization for SVDLinear in `model`.
+        regu_loss, num_param = 0., 0
+        for n, p in self.named_parameters():
+            if "A" in n or "B" in n:
+                para_cov = p @ p.T if "A" in n else p.T @ p
+                I = torch.eye(*para_cov.size(), out=torch.empty_like(para_cov))
+                I.requires_grad = False
+                regu_loss += torch.norm(para_cov - I, p="fro")
+                num_param += 1
+        return regu_weight * regu_loss / num_param
 
     def clear_cache(self):
         for module in self.modules():

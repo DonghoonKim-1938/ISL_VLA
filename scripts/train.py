@@ -3,8 +3,9 @@ import time
 import os
 import datetime
 from contextlib import nullcontext
+from pathlib import Path
 from pprint import pformat
-from typing import Any, List
+from typing import Any, List, Optional
 import gc
 
 # LoRA / Prefix / LoRA-MoE injection utilities
@@ -19,12 +20,13 @@ from torch.optim import Optimizer
 import torch.distributed as dist
 
 from common.datasets.make_dataloader import make_dataloader
+from common.policies.lora_ada import LoraADAConfig, RankAllocator
 from common.policies.extensions import ExtendedConfig
 from common.policies.lora import LoraConfig
 from common.policies.lora_moe import LoraMoEConfig
-from common.policies.lora_msp import LoraMSPConfig
+from common.policies.lora_msp import LoraMSPConfig, LoraMSPLinear
 from common.utils.train_utils import batch_to_device
-from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker, log_wandb_k_dist
+from common.utils.logging_utils import log_wandb_tracker, AverageMeter, MetricsTracker, log_wandb_k_dist, log_csv_k_dist
 from common.utils.random_utils import set_seed
 from common.utils.train_utils import (
     get_step_checkpoint_dir,
@@ -64,7 +66,9 @@ def update_policy(
     lr_scheduler=None,
     use_amp: bool = False,
     lock=None,
-    method: ExtendedConfig | None = None,
+    method: Optional[ExtendedConfig] = None,
+    rank_allocator: Optional[RankAllocator] = None,
+    step: Optional[int] = None,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     device = get_device_from_parameters(policy)
@@ -72,7 +76,7 @@ def update_policy(
     with torch.autocast(device_type=device.type) if use_amp else nullcontext():
         loss, output_dict = policy.forward(batch, method = method)
     grad_scaler.scale(loss).backward()
-    policy.clear_cache()
+    # policy.clear_cache()
 
     # Unscale the gradient of the optimizer's assigned params in-place **prior to gradient clipping**.
     grad_scaler.unscale_(optimizer)
@@ -87,6 +91,8 @@ def update_policy(
     # although it still skips optimizer.step() if the gradients contain infs or NaNs.
     with lock if lock is not None else nullcontext():
         grad_scaler.step(optimizer)
+    if rank_allocator is not None:
+        curr_rank, mask_threshold = rank_allocator.update_and_mask(policy, step)
     # Updates the scale for next iteration.
     grad_scaler.update()
 
@@ -159,7 +165,7 @@ def train(cfg: TrainPipelineConfig):
     # HYPERPARAMETERS FOR DEBUGGING
     # ---------------------------------------------------------
     cfg.method = ExtendedConfig()
-    cfg.method.core = 'lora_msp'
+    cfg.method.core = 'lora_ada'
     # cfg.method.lora_cfg = LoraMoEConfig(
     #     r=32,
     #     alpha=64,
@@ -167,17 +173,24 @@ def train(cfg: TrainPipelineConfig):
     #     num_experts=4,
     #     routing='top1'
     # )
-    cfg.method.lora_cfg = LoraMSPConfig(
-        r=32,
-        alpha=64,
+    # cfg.method.lora_cfg = LoraMSPConfig(
+    #     r=32,
+    #     alpha=64,
+    #     quantize=False,
+    #     num_experts=4,
+    #     target_threshold_init=0.8,
+    #     target_threshold_end=0.5,
+    #     threshold_scheduling=None,
+    #     use_spec_loss=True,
+    #     use_modular_loss=False,
+    #     use_id_loss=False,
+    #     router_projection=True,
+    #     routing='weighted'
+    # )
+    cfg.method.lora_cfg = LoraADAConfig(
+        r=128,
+        alpha=256,
         quantize=False,
-        num_experts=4,
-        target_threshold=0.9,
-        use_spec_loss=True,
-        use_modular_loss=False,
-        use_id_loss=False,
-        router_projection=True,
-        routing='top1'
     )
     cfg.method.target_keywords = ["all-linear"]
     # cfg.method.adapter_file_path = [
@@ -186,18 +199,19 @@ def train(cfg: TrainPipelineConfig):
     #     '/result/pi0_lora_r32_pourtheblock/030000/pretrained_model/adapters.safetensors',
     #     '/result/pi0_lora_r32_pushthebutton/030000/pretrained_model/adapters.safetensors'
     # ]
-    cfg.method.adapter_file_path = [
-        '/result/pi0_lora_moe_multitask_r32/checkpoints/030000/pretrained_model/adapters.safetensors'
-    ]
-    cfg.gradient_checkpointing = True
+    # cfg.method.adapter_file_path = [
+    #     '/result/SmolVLA_lora_moe_r32_weighted_multitask/030000/pretrained_model/adapters.safetensors'
+    # ]
+    cfg.gradient_checkpointing = False
     cfg.method.aux_loss_cfg = {
         "lb_coeff": 1e-3,
         "z_coeff": 0.01,
-        "spec_coeff": 1e-3,
+        "spec_coeff": 0.01,
         "mod_coeff": 1e-3,
         "id_coeff": 1e-3,
     }
-    cfg.method.expert_source = 'lora_moe'
+    # cfg.method.expert_source = 'lora_moe'
+
 
     # ---------------------------------------------------------
     # distributed mode flags
@@ -276,6 +290,16 @@ def train(cfg: TrainPipelineConfig):
     grad_scaler = GradScaler(device.type, enabled=cfg.policy.use_amp)
 
     step = 0  # number of policy updates (forward + backward + optim)
+
+    if cfg.method.core == "lora_ada":
+        rank_allocator = RankAllocator(
+            model = policy_m,
+            r = cfg.method.lora_cfg.r,
+            target_rank = cfg.method.lora_cfg.r // 4,
+        )
+        rank_allocator.set_total_step(cfg.steps)
+    else:
+        rank_allocator = None
 
     if cfg.resume:
         logging.info(f"Resuming training from checkpoint: {cfg.checkpoint_path}")
@@ -357,10 +381,6 @@ def train(cfg: TrainPipelineConfig):
         policy_m.gradient_checkpointing_enable()
 
     for _ in range(step, cfg.steps):
-        if isinstance(policy, FSDP):
-            gc.collect()
-            torch.cuda.empty_cache()
-
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
 
@@ -372,6 +392,11 @@ def train(cfg: TrainPipelineConfig):
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(device, non_blocking=True)
 
+        if (cfg.method.core == 'lora_msp') and (cfg.method.lora_cfg.threshold_scheduling is not None):
+            for m in policy.modules():
+                if isinstance(m, LoraMSPLinear):
+                    m.set_threshold(step)
+
         train_tracker, output_dict = update_policy(
             train_tracker,
             policy,
@@ -382,6 +407,8 @@ def train(cfg: TrainPipelineConfig):
             lr_scheduler=lr_scheduler,
             use_amp=cfg.policy.use_amp,
             method=cfg.method,
+            rank_allocator=rank_allocator,
+            step=step,
         )
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
@@ -408,7 +435,9 @@ def train(cfg: TrainPipelineConfig):
                 pass
             else:
                 k_dist = policy_m.get_k_distribution()
+                log_csv_path = cfg.output_dir / "k_dist_log"
                 log_wandb_k_dist(wandb_logger, k_dist, step)
+                log_csv_k_dist(log_csv_path, k_dist, step) if is_log_step else None
 
         if cfg.save_checkpoint and is_saving_step:
             if isinstance(policy, FSDP):
