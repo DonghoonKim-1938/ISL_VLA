@@ -419,7 +419,7 @@ class LoraMSPLinear(LoraLinear):
 
         return gates
 
-    def set_threshold(self, step: float):
+    def set_threshold(self, step: int):
         if self.cfg.threshold_scheduling is None:
             self.target_threshold = self.cfg.target_threshold_init
 
