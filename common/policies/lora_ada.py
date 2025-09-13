@@ -32,7 +32,8 @@ class LoraADALinear(LoraLinear):
         self.B = nn.Parameter(torch.zeros(out_f, cfg.r, dtype=self.base.weight.dtype))
         self.rank_num = nn.Parameter(torch.zeros(1, dtype=self.base.weight.dtype, requires_grad=False))
 
-        self.rank_num.data.fill_(float(self.r))
+        self.rank_num.data.fill_(float(cfg.r))
+        self.rank_num.requires_grad = False
 
         nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
         nn.init.kaiming_uniform_(self.B, a=math.sqrt(5))
@@ -48,7 +49,7 @@ class LoraADALinear(LoraLinear):
         base_out = self.base(x)
         x_dp = self.dropout(x)
 
-        if self.r > 0:
+        if self.cfg.r > 0:
             proj = self.A * self.E
             proj_r = torch.matmul(x_dp, proj.T)
             lora_out = torch.matmul(proj_r, self.B.T)
@@ -83,7 +84,7 @@ class RankAllocator(object):
         self,
         model: nn.Module,
         r: int = 128,
-        target_rank: int = 32,
+        target_rank: int = 76,
         init_warmup: int = 1000,
         final_warmup: int = 20000,
         mask_interval: int = 10,
@@ -170,16 +171,17 @@ class RankAllocator(object):
             mask_ind = True if step % self.mask_interval == 0 else False
         return curr_rank, mask_ind
 
-
     def update_ipt(self, model):
         for n,p in model.named_parameters():
-            if "lora_" in n:
+            if any(x in n for x in [".A", ".B", ".E"]):
                 if n not in self.ipt:
                     self.ipt[n] = torch.zeros_like(p)
                     self.exp_avg_ipt[n] = torch.zeros_like(p)
                     self.exp_avg_unc[n] = torch.zeros_like(p)
                 with torch.no_grad():
                     # Calculate sensitivity
+                    if p is None or p.grad is None:
+                        continue
                     self.ipt[n] = (p * p.grad).abs().detach()
                     # Update sensitivity
                     self.exp_avg_ipt[n] = self.beta1 * self.exp_avg_ipt[n] + \
@@ -302,5 +304,3 @@ class RankAllocator(object):
                 self.tb_writter.add_scalar(
                     "train/orth_regu_loss", sum(regu_loss)/len(regu_loss), self.global_step
                 )
-
-

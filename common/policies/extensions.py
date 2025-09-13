@@ -30,7 +30,7 @@ class ExtendedConfig:
             return LoraMoEConfig()
         elif self.core in ["lora_msp", "qlora_msp"]:
             return LoraMSPConfig()
-        elif self.core in ["lora_ada, qlora_ada"]:
+        elif self.core in ["lora_ada", "qlora_ada"]:
             return LoraADAConfig()
         else:
             raise ValueError(f"Unknown core: {self.core}")

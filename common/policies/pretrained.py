@@ -214,7 +214,7 @@ class PreTrainedPolicy(HubMixin, HFPreTrainedModel, abc.ABC):
             assert self.train_aux_loss
             aux_loss, loss_dict = self._router_forward(method.aux_loss_cfg, loss_dict)
         elif method.core == "lora_ada":
-            aux_loss = self._compute_orth_regu(regu_weight=0.1)
+            aux_loss = self._compute_orth_regu(regu_weight=0.01)
         else:
             aux_loss = torch.tensor(0.0, device=loss.device, dtype=loss.dtype)
 

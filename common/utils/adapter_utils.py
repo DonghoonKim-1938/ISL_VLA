@@ -248,6 +248,6 @@ def get_adapter_names(layer_cls: Type[LoraLinear]) -> List[str]:
     elif layer_cls is LoraMoELinear:
         return ["A", "B", "router.weight"]
     elif layer_cls is LoraADALinear:
-        return ["A", "B", "E", "rank_num"]
+        return ["A", "B", "E"]
     else:
         raise TypeError(f"Unknown layer class {layer_cls}")

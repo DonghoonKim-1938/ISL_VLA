@@ -67,6 +67,8 @@ def update_policy(
     use_amp: bool = False,
     lock=None,
     method: Optional[ExtendedConfig] = None,
+    rank_allocator: Optional[RankAllocator] = None,
+    step: Optional[int] = None,
 ) -> tuple[MetricsTracker, dict]:
     start_time = time.perf_counter()
     device = get_device_from_parameters(policy)
@@ -89,6 +91,8 @@ def update_policy(
     # although it still skips optimizer.step() if the gradients contain infs or NaNs.
     with lock if lock is not None else nullcontext():
         grad_scaler.step(optimizer)
+    if rank_allocator is not None:
+        curr_rank, mask_threshold = rank_allocator.update_and_mask(policy, step)
     # Updates the scale for next iteration.
     grad_scaler.update()
 
@@ -169,20 +173,20 @@ def train(cfg: TrainPipelineConfig):
     #     num_experts=4,
     #     routing='top1'
     # )
-    cfg.method.lora_cfg = LoraMSPConfig(
-        r=32,
-        alpha=64,
-        quantize=False,
-        num_experts=4,
-        target_threshold_init=0.8,
-        target_threshold_end=0.5,
-        threshold_scheduling=None,
-        use_spec_loss=True,
-        use_modular_loss=False,
-        use_id_loss=False,
-        router_projection=True,
-        routing='weighted'
-    )
+    # cfg.method.lora_cfg = LoraMSPConfig(
+    #     r=32,
+    #     alpha=64,
+    #     quantize=False,
+    #     num_experts=4,
+    #     target_threshold_init=0.8,
+    #     target_threshold_end=0.5,
+    #     threshold_scheduling=None,
+    #     use_spec_loss=True,
+    #     use_modular_loss=False,
+    #     use_id_loss=False,
+    #     router_projection=True,
+    #     routing='weighted'
+    # )
     cfg.method.lora_cfg = LoraADAConfig(
         r=128,
         alpha=256,
@@ -198,7 +202,7 @@ def train(cfg: TrainPipelineConfig):
     # cfg.method.adapter_file_path = [
     #     '/result/SmolVLA_lora_moe_r32_weighted_multitask/030000/pretrained_model/adapters.safetensors'
     # ]
-    cfg.gradient_checkpointing = True
+    cfg.gradient_checkpointing = False
     cfg.method.aux_loss_cfg = {
         "lb_coeff": 1e-3,
         "z_coeff": 0.01,
@@ -206,12 +210,8 @@ def train(cfg: TrainPipelineConfig):
         "mod_coeff": 1e-3,
         "id_coeff": 1e-3,
     }
-    cfg.method.expert_source = 'lora_moe'
-    # cfg.method.adapter_file_path = [
-    #     '/result/SmolVLA_lora_msp_r32_scratch_weighted_0.9_pickplace/checkpoints/025000/pretrained_model/adapters.safetensors'
-    # ]
-    # cfg.method.is_train = False
-    # cfg.checkpoint_path = Path('/result/SmolVLA_lora_msp_r32_scratch_weighted_0.9_pickplace/checkpoints/025000')
+    # cfg.method.expert_source = 'lora_moe'
+
 
     # ---------------------------------------------------------
     # distributed mode flags
@@ -407,12 +407,11 @@ def train(cfg: TrainPipelineConfig):
             lr_scheduler=lr_scheduler,
             use_amp=cfg.policy.use_amp,
             method=cfg.method,
+            rank_allocator=rank_allocator,
+            step=step,
         )
         if is_distributed:
             dist.barrier(device_ids=[local_rank])
-
-        if rank_allocator is not None:
-            curr_rank, mask_threshold = rank_allocator.update_and_mask(policy, step)
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
